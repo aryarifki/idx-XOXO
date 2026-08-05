@@ -2,7 +2,6 @@
 import os
 import sys
 
-# FIX: Tambahkan root repo ke Python path
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "src"))
@@ -10,11 +9,27 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 from idx_bandarmology import pipeline, config as idx_config
 from scanner.scanner_engine import scan_signals
 from scanner.telegram_bot import format_signal_message, send_message, send_no_signal
-from scanner.track_record import save_signal, get_stats
+from scanner.track_record import save_signal, get_stats, consecutive_losses
 from scanner.config import SESSION
+from scanner.health_check import check_broker_token
 
 
 def main():
+    # === 1. HEALTH CHECK TOKEN ===
+    ok, msg = check_broker_token()
+    if not ok:
+        send_message("TOKEN ERROR\n\n" + msg + "\n\nSegera refresh BROKER_API_TOKEN di GitHub Secrets.")
+        print("Token error:", msg)
+        sys.exit(1)
+    
+    # === 2. CIRCUIT BREAKER ===
+    loss_streak = consecutive_losses()
+    if loss_streak >= 3:
+        send_message("CIRCUIT BREAKER\n\n" + str(loss_streak) + " LOSS berturut-turut. Scanner di-pause hari ini.")
+        print("Circuit breaker triggered:", loss_streak, "losses")
+        sys.exit(0)
+    
+    # === 3. MAIN SCANNER ===
     print("=" * 60)
     print("BANDARMOLOGY AUTO PIPELINE + SCANNER")
     print("Session:", SESSION)
