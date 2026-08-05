@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from idx_bandarmology import pipeline, storage, features
+from scanner.track_record import get_recent_tickers
 
 warnings.filterwarnings("ignore")
 
@@ -55,10 +56,8 @@ def compute_ta_score(price_df: pd.DataFrame, ticker: str) -> dict:
         return None
     
     latest = df.iloc[-1]
-    prev = df.iloc[-2]
     lp = float(latest["close"])
     
-    # Indicators
     c = cmf(df)
     o = obv(df)
     r = rsi(df["close"])
@@ -69,7 +68,6 @@ def compute_ta_score(price_df: pd.DataFrame, ticker: str) -> dict:
     atr_v = float(a.iloc[-1]) if not pd.isna(a.iloc[-1]) else lp * 0.02
     vol_ratio = float(latest["volume"]) / float(df["volume"].tail(20).mean()) if df["volume"].tail(20).mean() > 0 else 1.0
     
-    # Score
     score = 50.0
     score += np.clip(cmf_v * 120, -25, 25)
     if vol_ratio > 1.5:
@@ -79,7 +77,6 @@ def compute_ta_score(price_df: pd.DataFrame, ticker: str) -> dict:
     elif rsi_v > 70:
         score -= 15
     
-    # ATR-based TP/SL
     sl = max(round(lp - 1.5 * atr_v, 0), round(float(df["low"].tail(10).min()) * 0.97, 0))
     tp = round(lp + 2.0 * (lp - sl), 0)
     sl_pct = (lp - sl) / lp * 100
@@ -128,9 +125,16 @@ def scan_signals(tickers: list[str] | None = None, session: str = "PRE_MARKET") 
         feat_df = price_df.copy()
     
     # 3. Ambil data terbaru per ticker
+    recent = get_recent_tickers(5)
+    print(f"    Cooldown tickers: {recent}")
+    
     candidates = []
     
     for tk in tickers:
+        if tk in recent:
+            print(f"    SKIP (cooldown): {tk}")
+            continue
+        
         try:
             # Data broker terbaru
             bdf = broker_df[broker_df["ticker"] == tk].sort_values("date")
@@ -158,7 +162,7 @@ def scan_signals(tickers: list[str] | None = None, session: str = "PRE_MARKET") 
                 continue
             
             # Gate 3: Minimal total value (likuiditas)
-            if total_value < 1e9:  # 1 miliar
+            if total_value < 1e9:
                 continue
             
             # Gate 4: Price & volume filter
@@ -170,9 +174,9 @@ def scan_signals(tickers: list[str] | None = None, session: str = "PRE_MARKET") 
             lp = float(latest_price["close"])
             vol = float(latest_price["volume"])
             
-            if lp < 50:  # MIN_PRICE_IDR
+            if lp < 50:
                 continue
-            if vol < 100_000:  # MIN_VOLUME_LOT
+            if vol < 100_000:
                 continue
             
             # ── TA SCORING ───────────────────────────────────
@@ -191,14 +195,14 @@ def scan_signals(tickers: list[str] | None = None, session: str = "PRE_MARKET") 
                 "NET_BUY": 8,
             }.get(bandar_signal, 0)
             
-            # Foreign net bonus (semakin besar akumulasi asing, semakin tinggi)
-            foreign_bonus = min(15, max(0, foreign_net / 5e9))  # max 15 pts untuk 75M+
+            # Foreign net bonus
+            foreign_bonus = min(15, max(0, foreign_net / 5e9))
             
             # ── COMPOSITE SCORE ──────────────────────────────
             final_score = int(np.clip(ta["ta_score"] + broker_bonus + foreign_bonus, 0, 100))
             
             # Threshold
-            if final_score < 55:  # MIN_SCORE_TO_SIGNAL
+            if final_score < 55:
                 continue
             
             # TP/SL sanity check
@@ -276,7 +280,7 @@ def scan_signals(tickers: list[str] | None = None, session: str = "PRE_MARKET") 
     
     # Sort & limit
     candidates.sort(key=lambda x: x["score"], reverse=True)
-    selected = candidates[:3]  # MAX_SIGNALS_PER_SESI
+    selected = candidates[:3]
     
     print(f"\n 📊 {len(selected)} sinyal dari {len(candidates)} kandidat")
     return selected
