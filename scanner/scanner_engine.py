@@ -125,8 +125,9 @@ def scan_signals(tickers: list[str] | None = None, session: str = "PRE_MARKET") 
         feat_df = price_df.copy()
     
     # 3. Ambil data terbaru per ticker
-    recent = get_recent_tickers(5)
-    print(f"    Cooldown tickers: {recent}")
+    from scanner.track_record import get_recent_tickers
+    recent = get_recent_tickers(5)  # 5 hari cooldown
+    print("    Cooldown tickers:", recent)
     
     candidates = []
     
