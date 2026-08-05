@@ -228,6 +228,30 @@ Both layers run **per focused ticker** — the BULL and BREN cases above are pro
 
 With a short history and a small watchlist, results are exploratory rather than production-grade trading signals.
 
+
+## Perubahan dibanding repo awal
+
+Berdasarkan riwayat Git pada branch ini, baseline repo awal berada di commit `6059891` (**Added Dev Container Folder**), dan perubahan setelahnya saat ini berada di commit `8a921f9` (**Daily pipeline + BI export Wed Aug  5 20:07:26 UTC 2026**).
+
+### Ringkasan perubahan
+
+Perubahan yang diterapkan sejak repo awal hanya terjadi pada **2 file data hasil pipeline/BI export**:
+
+1. `data/bi_daily_signals.csv`
+2. `data/bi_price_metrics.csv`
+
+### Detail perbedaan
+
+- **Tidak ada penambahan file baru** dibanding baseline.
+- **Tidak ada penghapusan file** dibanding baseline.
+- **Tidak ada perubahan kode** pada modul Python (`src/`, `scanner/`, `dashboard/`) maupun workflow (`.github/workflows/`).
+- Perubahan bersifat **pembaruan data output harian** (refresh dataset) dari proses pipeline otomatis.
+
+### Implikasi
+
+- Struktur proyek, arsitektur, dan logika aplikasi tetap sama seperti repo awal.
+- Perbedaan saat ini merepresentasikan **snapshot data terbaru**, bukan perubahan fitur atau refactor kode.
+
 ## Roadmap
 
 - [ ] Add automatic scheduling for daily pipeline runs.
