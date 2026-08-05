@@ -7,6 +7,8 @@ on:
     - cron: '0 3 * * 1-5'    # 10:00 WIB — POST_OPEN
     - cron: '0 6 * * 1-5'    # 13:00 WIB — MIDDAY
     - cron: '30 9 * * 1-5'   # 16:30 WIB — POST_MARKET
+    - cron: '35 9 * * 1-5'   # 16:35 WIB — check TP/SL
+      
   workflow_dispatch:
     inputs:
       session:
