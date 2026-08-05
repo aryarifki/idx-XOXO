@@ -1,0 +1,53 @@
+name: Weekly Backtest
+
+on:
+  schedule:
+    - cron: '0 10 * * 0'   # Minggu 17:00 WIB
+  workflow_dispatch:
+    inputs:
+      universe:
+        description: 'Universe'
+        required: true
+        default: 'LQ45'
+        type: choice
+        options:
+          - IDX30
+          - LQ45
+          - ALL_LIQUID
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Run Backtest
+        env:
+          BROKER_API_TOKEN: ${{ secrets.BROKER_API_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          UNIVERSE: ${{ github.event.inputs.universe || 'LQ45' }}
+        run: python scanner/run_backtest.py
+      
+      - name: Commit results
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/backtest_results.csv
+          git diff --cached --quiet || git commit -m "Weekly backtest [$(date)]"
+          git push || echo "Nothing to commit"
+          
