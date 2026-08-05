@@ -7,6 +7,8 @@ on:
 
 jobs:
   pipeline:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 20
     
@@ -40,6 +42,13 @@ jobs:
       
       - name: BI Export Layer
         run: python scanner/bi_export.py
+      
+      - name: Backup SQLite to Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlite-backup-${{ github.run_id }}
+          path: data/db/bandarmology.sqlite
+          retention-days: 30
       
       - name: Commit data
         run: |
