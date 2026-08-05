@@ -228,6 +228,64 @@ Both layers run **per focused ticker** — the BULL and BREN cases above are pro
 
 With a short history and a small watchlist, results are exploratory rather than production-grade trading signals.
 
+
+## Perubahan dibanding repo original (sebelum fork)
+
+Baseline yang dipakai adalah repo original author: `https://github.com/IgnatiusHarry/idx-bandarmology` pada branch `main` (`upstream/main`).
+
+### Ringkasan perbedaan fork ini vs upstream
+
+Perubahan di fork ini didominasi oleh perluasan dari project riset/notebook menjadi workflow operasional harian (scanner + automation + BI export). Secara Git, repo ini **divergen** dari upstream (riwayat commit berbeda, tidak memiliki merge-base langsung), sehingga perbandingan dilakukan pada **snapshot konten** `upstream/main` vs `HEAD` fork ini.
+
+### Detail perubahan file (snapshot upstream/main → fork HEAD)
+
+#### 1) Penambahan workflow automation (CI/CD)
+Ditambahkan file-file berikut:
+- `.github/workflows/auto_scan.yml`
+- `.github/workflows/backtest.yml`
+- `.github/workflows/daily_pipeline.yml`
+- `.github/workflows/health_check.yml`
+
+#### 2) Penambahan modul scanner operasional
+Ditambahkan direktori dan modul berikut:
+- `scanner/__init__.py`
+- `scanner/backtest_engine.py`
+- `scanner/bi_export.py`
+- `scanner/check_outcomes.py`
+- `scanner/config.py`
+- `scanner/health_check.py`
+- `scanner/run_backtest.py`
+- `scanner/run_health_check.py`
+- `scanner/run_scan.py`
+- `scanner/scanner_engine.py`
+- `scanner/telegram_bot.py`
+- `scanner/track_record.py`
+- `scanner/universe.py`
+
+#### 3) Penambahan artefak data hasil proses
+Ditambahkan file data berikut:
+- `data/backtest_results.csv`
+- `data/bi_broker_leaderboard.csv`
+- `data/bi_daily_signals.csv`
+- `data/bi_price_metrics.csv`
+- `data/bi_signal_performance.csv`
+- `data/signals.csv`
+
+#### 4) Penambahan environment pengembangan
+Ditambahkan:
+- `.devcontainer/devcontainer.json`
+
+#### 5) File yang dimodifikasi dibanding upstream
+- `README.md`
+- `requirements.txt`
+
+### Inti transformasi dari upstream ke fork ini
+
+- Dari **project analisis end-to-end** menjadi **pipeline + scanner yang siap dijalankan berkala**.
+- Menambahkan **otomasi harian dan health/backtest workflow** melalui GitHub Actions.
+- Menambahkan **lapisan output BI** melalui file CSV siap konsumsi.
+- Menambahkan **integrasi notifikasi/operasional** melalui modul scanner.
+
 ## Roadmap
 
 - [ ] Add automatic scheduling for daily pipeline runs.
