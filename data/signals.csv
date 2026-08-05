@@ -1,0 +1,4 @@
+id,ticker,signal_type,session,entry_low,entry_high,tp_price,sl_price,tp_pct,sl_pct,score,bandar_signal,foreign_net,top_broker,rationale,timestamp_wib,status,exit_price,exit_timestamp,pnl_pct,days_held,notes
+BMP-ANTM-20260805-POS,ANTM,STRONG_BUY,POST_MARKET,,,,,,,75,STRONG_ACCUMULATION,153816610000.0,AK (Asing) Rp 93.6M,Bandar strong accumulation · Foreign net buy Rp 153.8M · Volume 1.9x avg,2026-08-05 19:20:43,OPEN,,,,,
+BMP-GOTO-20260805-POS,GOTO,BUY,POST_MARKET,,,,,,,70,STRONG_ACCUMULATION,1556215000.0,AK (Asing) Rp 2.2M,Bandar strong accumulation · Foreign net buy Rp 1.6M,2026-08-05 19:20:43,OPEN,,,,,
+BMP-BMRI-20260805-POS,BMRI,BUY,POST_MARKET,,,,,,,63,ACCUMULATION,8094831000.0,KZ (Asing) Rp 109.4M,Bandar accumulation · Foreign net buy Rp 8.1M,2026-08-05 19:20:43,OPEN,,,,,
