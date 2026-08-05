@@ -120,3 +120,14 @@ def update_signal_outcome(signal_id: str, status: str, exit_price: float,
     df.loc[mask, "notes"] = notes
     df[COLUMNS].to_csv(SIGNALS_CSV, index=False)
     return True
+def get_recent_tickers(days: int = 5) -> set:
+    """Return set ticker yang sudah sinyal dalam N hari terakhir."""
+    init_db()
+    df = pd.read_csv(SIGNALS_CSV, dtype=str)
+    if df.empty or "timestamp_wib" not in df.columns:
+        return set()
+    
+    df["ts"] = pd.to_datetime(df["timestamp_wib"], errors="coerce")
+    cutoff = datetime.now() - timedelta(days=days)
+    recent = df[df["ts"] >= cutoff]
+    return set(recent["ticker"].unique())
