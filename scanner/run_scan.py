@@ -11,7 +11,8 @@ import sys
 # Pastikan src/idx_bandarmology bisa di-import
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from idx_bandarmology import pipeline, config as idx_config
+from idx_bandarmology import pipeline
+from scanner.universe import get_universe
 from scanner.scanner_engine import scan_signals
 from scanner.telegram_bot import format_signal_message, send_message, send_no_signal
 from scanner.track_record import save_signal, get_stats
