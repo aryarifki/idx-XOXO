@@ -1,14 +1,11 @@
-name: Bandarmology Auto Scan & Signal
+name: Bandarmology Auto Scan and Signal
 
 on:
   schedule:
-    # WIB = UTC+7. Hari Senin-Jumat saja.
-    - cron: '30 1 * * 1-5'   # 08:30 WIB — PRE_MARKET
-    - cron: '0 3 * * 1-5'    # 10:00 WIB — POST_OPEN
-    - cron: '0 6 * * 1-5'    # 13:00 WIB — MIDDAY
-    - cron: '30 9 * * 1-5'   # 16:30 WIB — POST_MARKET
-    - cron: '35 9 * * 1-5'   # 16:35 WIB — check TP/SL
-      
+    - cron: '30 1 * * 1-5'
+    - cron: '0 3 * * 1-5'
+    - cron: '0 6 * * 1-5'
+    - cron: '30 9 * * 1-5'
   workflow_dispatch:
     inputs:
       session:
@@ -42,23 +39,21 @@ jobs:
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
       
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
           
-     - name: Run Pipeline + Scanner
+      - name: Run Pipeline and Scanner
         env:
           BROKER_API_TOKEN: ${{ secrets.BROKER_API_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          UNIVERSE: ${{ vars.UNIVERSE || 'LQ45' }}
           SESSION: ${{ github.event.inputs.session || 'PRE_MARKET' }}
-        run: |
-          python scanner/run_scan.py
+        run: python scanner/run_scan.py
           
       - name: Commit data changes
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add data/db/bandarmology.sqlite data/signals.csv
-          git diff --cached --quiet || git commit -m "Auto: pipeline + signals [$(date)]"
+          git add data/
+          git diff --cached --quiet || git commit -m "Auto signals"
           git push || echo "Nothing to commit"
+          
