@@ -22,3 +22,5 @@ SIGNALS_CSV = ROOT / "data" / "signals.csv"
 
 # Session label
 SESSION = os.environ.get("SESSION", "PRE_MARKET")
+# Universe selection
+UNIVERSE = os.environ.get("UNIVERSE", "LQ45")  # IDX30 | LQ45 | ALL_LIQUID
