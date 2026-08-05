@@ -2,7 +2,7 @@ name: Weekly Backtest
 
 on:
   schedule:
-    - cron: '0 10 * * 0'   # Minggu 17:00 WIB
+    - cron: '0 10 * * 0'
   workflow_dispatch:
     inputs:
       universe:
@@ -47,7 +47,10 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add data/backtest_results.csv
-          git diff --cached --quiet || git commit -m "Weekly backtest [$(date)]"
+          # Buat folder data kalau belum ada
+          mkdir -p data
+          # Touch file kalau belum ada agar git add tidak error
+          touch data/backtest_results.csv
+          git add data/
+          git diff --cached --quiet || git commit -m "Weekly backtest [$(date +%Y-%m-%d)]"
           git push || echo "Nothing to commit"
-          
