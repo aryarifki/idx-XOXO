@@ -28,8 +28,9 @@ def main():
     # ── STEP 1: Fetch data via pipeline ─────────────────────
     print("\n[1/4] Menjalankan pipeline.run()...")
     try:
-        result = pipeline.run(
-            tickers=idx_config.WATCHLIST,
+            tickers = get_universe(os.environ.get("UNIVERSE", "LQ45"))
+            result = pipeline.run(
+            tickers=tickers,
             price_period="6mo",
             fetch_broker_data=True,
         )
