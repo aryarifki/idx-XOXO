@@ -2,8 +2,9 @@
 import sys
 import os
 
-# Fix: tambahkan root ke path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# FIX: Tambahkan root repo ke Python path
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 from scanner.backtest_engine import WalkForwardBacktest
 from scanner.universe import get_universe
@@ -35,4 +36,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
