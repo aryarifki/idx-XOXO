@@ -1,0 +1,35 @@
+name: Health Check
+
+on:
+  schedule:
+    - cron: '0 0 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  check:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Check
+        env:
+          BROKER_API_TOKEN: ${{ secrets.BROKER_API_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "
+import os, sys
+sys.path.insert(0, 'src')
+from scanner.health_check import check_broker_token
+from scanner.telegram_bot import send_message
+ok, msg = check_broker_token()
+if ok:
+    send_message('Health Check OK\n\nToken valid. Pipeline siap.')
+else:
+    send_message('Health Check FAIL\n\n' + msg)
+"
