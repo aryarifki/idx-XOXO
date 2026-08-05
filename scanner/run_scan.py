@@ -45,8 +45,12 @@ def main():
         print("    Prices:", result["n_prices"], "rows")
         print("    Broker:", result["n_broker"], "rows")
     except Exception as e:
-        print("    Pipeline error:", e)
-        send_message("Pipeline Error: " + str(e))
+        err_msg = str(e)
+        print("    Pipeline error:", err_msg)
+        if "401" in err_msg or "403" in err_msg or "Unauthorized" in err_msg:
+            send_message("TOKEN EXPIRED\n\n" + err_msg + "\n\nRefresh BROKER_API_TOKEN di GitHub Secrets.")
+        else:
+            send_message("Pipeline Error: " + err_msg)
         sys.exit(1)
     
     print("\n[2/4] Scanning signals...")
