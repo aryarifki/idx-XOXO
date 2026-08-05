@@ -1,8 +1,11 @@
-"""Entry point utama: pipeline.run() → scan → Telegram."""
+"""Entry point utama: pipeline.run() -> scan -> Telegram."""
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+# FIX: Tambahkan root repo ke Python path
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from idx_bandarmology import pipeline, config as idx_config
 from scanner.scanner_engine import scan_signals
@@ -78,4 +81,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
