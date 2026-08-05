@@ -1,6 +1,9 @@
 """Entry point backtest."""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+import sys
+import os
+
+# Fix: tambahkan root ke path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scanner.backtest_engine import WalkForwardBacktest
 from scanner.universe import get_universe
@@ -24,12 +27,12 @@ def main():
         out_path = "data/backtest_results.csv"
         os.makedirs("data", exist_ok=True)
         results.to_csv(out_path, index=False)
-        print(f"✓ Results saved to {out_path}")
+        print("Results saved to", out_path)
         
         report = bt.report()
         send_message(report)
-        print("✓ Report sent to Telegram")
+        print("Report sent to Telegram")
 
 if __name__ == "__main__":
     main()
-  
+    
