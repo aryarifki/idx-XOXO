@@ -210,3 +210,255 @@ def backfill_broker_history(
         "n_broker": n_broker,
         "n_activity": n_activity,
     }
+# ═══════════════════════════════════════════════════════════════════════════════
+# ALL-IDX BATCH PIPELINE  (anti rate-limit)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import json
+import random
+import time
+from pathlib import Path
+
+from . import broker_api, universe
+
+
+_CHECKPOINT_DIR = config.DATA_DIR / "checkpoints"
+_CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _checkpoint_path() -> Path:
+    return _CHECKPOINT_DIR / f"all_idx_{datetime.now(timezone.utc).date().isoformat()}.json"
+
+
+def _load_checkpoint() -> dict:
+    path = _checkpoint_path()
+    if path.exists():
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"completed": [], "failed": {}, "flow_rows": 0, "activity_rows": 0, "price_rows": 0}
+
+
+def _save_checkpoint(cp: dict) -> None:
+    with open(_checkpoint_path(), "w") as f:
+        json.dump(cp, f, indent=2)
+
+
+def _single_flow_row(sym: str, result: dict, fetched_at: str) -> dict | None:
+    """Convert fetch_analysis result to one broker_flow row."""
+    if not result.get("available"):
+        return None
+    broker = result.get("broker") or {}
+    fd = result.get("foreignDomestic") or {}
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    if not broker.get("available") and not fd.get("available"):
+        return None
+
+    return {
+        "date": broker.get("date") or fd.get("date") or today,
+        "ticker": sym,
+        "bandar_signal": broker.get("signal"),
+        "bandar_signal_score": broker.get("signalScore"),
+        "foreign_net_broker": broker.get("foreignNet"),
+        "local_net_broker": broker.get("localNet"),
+        "gov_net_broker": broker.get("govNet"),
+        "foreign_net_flow": fd.get("netForeign"),
+        "domestic_net_flow": fd.get("netDomestic"),
+        "total_value": fd.get("totalValue"),
+        "foreign_signal": fd.get("signal"),
+        "conclusion_broker": broker.get("conclusion"),
+        "conclusion_flow": fd.get("conclusion"),
+        "fetched_at": fetched_at,
+    }
+
+
+def _single_activity_rows(sym: str, result: dict, fetched_at: str) -> list[dict]:
+    """Convert fetch_analysis broker buyers/sellers to activity rows."""
+    broker = (result or {}).get("broker") or {}
+    if not broker.get("available"):
+        return []
+
+    row_date = broker.get("date") or datetime.now(timezone.utc).date().isoformat()
+    rows: dict[str, dict] = {}
+
+    for b in broker.get("buyers", []):
+        code = b.get("code")
+        if not code:
+            continue
+        rows.setdefault(code, {
+            "date": row_date,
+            "ticker": sym,
+            "broker_code": code,
+            "participant_type": b.get("type"),
+            "buy_value": 0.0,
+            "sell_value": 0.0,
+            "net_value": 0.0,
+            "buy_lot": 0.0,
+            "sell_lot": 0.0,
+            "frequency": 0.0,
+            "buy_avg_price": None,
+            "sell_avg_price": None,
+            "fetched_at": fetched_at,
+        })
+        rows[code]["buy_value"] += float(b.get("value") or 0)
+        rows[code]["buy_lot"] += float(b.get("lot") or 0)
+        rows[code]["frequency"] += float(b.get("freq") or 0)
+        rows[code]["buy_avg_price"] = b.get("avgPrice")
+
+    for s in broker.get("sellers", []):
+        code = s.get("code")
+        if not code:
+            continue
+        rows.setdefault(code, {
+            "date": row_date,
+            "ticker": sym,
+            "broker_code": code,
+            "participant_type": s.get("type"),
+            "buy_value": 0.0,
+            "sell_value": 0.0,
+            "net_value": 0.0,
+            "buy_lot": 0.0,
+            "sell_lot": 0.0,
+            "frequency": 0.0,
+            "buy_avg_price": None,
+            "sell_avg_price": None,
+            "fetched_at": fetched_at,
+        })
+        if not rows[code].get("participant_type"):
+            rows[code]["participant_type"] = s.get("type")
+        rows[code]["sell_value"] += abs(float(s.get("value") or 0))
+        rows[code]["sell_lot"] += abs(float(s.get("lot") or 0))
+        rows[code]["frequency"] += float(s.get("freq") or 0)
+        rows[code]["sell_avg_price"] = s.get("avgPrice")
+
+    out = []
+    for row in rows.values():
+        row["net_value"] = row["buy_value"] - row["sell_value"]
+        out.append(row)
+    return out
+
+
+def _fetch_one_ticker(sym: str, max_retries: int = 3) -> tuple[dict | None, list[dict]]:
+    """Fetch with exponential backoff + jitter."""
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    for attempt in range(max_retries):
+        try:
+            result = broker_api.fetch_analysis(sym)
+            flow = _single_flow_row(sym, result, fetched_at)
+            activity = _single_activity_rows(sym, result, fetched_at)
+            return flow, activity
+        except Exception as exc:
+            wait = (2 ** attempt) + random.uniform(0, 2)
+            print(f"[pipeline] {sym} attempt {attempt + 1}/{max_retries} failed ({type(exc).__name__}), retrying in {wait:.1f}s...")
+            time.sleep(wait)
+    return None, []
+
+
+def run_all_idx(
+    batch_size: int = 20,
+    delay_seconds: float = 5.0,
+    max_retries: int = 3,
+    price_period: str = "1y",
+    force: bool = False,
+) -> dict:
+    """Fetch broker data for ALL IDX tickers with anti-rate-limit protection.
+
+    Designed for cron job: runs after market close, takes ~30–60 min for 800 tickers.
+    """
+    if not broker_api.is_available():
+        raise RuntimeError("BROKER_API_TOKEN not configured.")
+
+    all_tickers = universe.get_idx_universe()
+    if not all_tickers:
+        raise RuntimeError("Could not load IDX universe.")
+
+    print(f"[pipeline] IDX universe: {len(all_tickers)} tickers")
+
+    storage.init_db()
+
+    # 1) Prices (batch yfinance, sekali jalan)
+    print("[pipeline] fetching prices for all tickers...")
+    price_df = prices.fetch_history_many(all_tickers, period=price_period)
+    n_prices = storage.upsert_prices(price_df)
+    print(f"[pipeline]   -> {n_prices} price rows upserted")
+
+    # 2) Checkpoint
+    cp = _load_checkpoint()
+    if not force and cp.get("completed"):
+        print(f"[pipeline] resuming from checkpoint: {len(cp['completed'])} already done")
+
+    completed = set(cp.get("completed", []))
+    failed = dict(cp.get("failed", {}))
+    flow_buffer: list[dict] = []
+    activity_buffer: list[dict] = []
+
+    total_flow = cp.get("flow_rows", 0)
+    total_activity = cp.get("activity_rows", 0)
+
+    # 3) Batch loop
+    pending = [t for t in all_tickers if t not in completed]
+    n_batches = (len(pending) + batch_size - 1) // batch_size
+
+    for batch_idx in range(n_batches):
+        batch = pending[batch_idx * batch_size : (batch_idx + 1) * batch_size]
+        print(f"[pipeline] batch {batch_idx + 1}/{n_batches} ({len(batch)} tickers): {batch[:3]}...")
+
+        for sym in batch:
+            flow, activity = _fetch_one_ticker(sym, max_retries=max_retries)
+            if flow:
+                flow_buffer.append(flow)
+                completed.add(sym)
+            else:
+                failed[sym] = "max_retries_exceeded"
+                print(f"[pipeline]   {sym} -> FAILED after {max_retries} retries")
+
+            if activity:
+                activity_buffer.extend(activity)
+
+        # Upsert setiap batch (jangan tahan semua di memory)
+        if flow_buffer:
+            n = storage.upsert_broker_flow(pd.DataFrame(flow_buffer))
+            total_flow += n
+            flow_buffer.clear()
+        if activity_buffer:
+            n = storage.upsert_broker_activity(pd.DataFrame(activity_buffer))
+            total_activity += n
+            activity_buffer.clear()
+
+        # Save checkpoint
+        _save_checkpoint({
+            "completed": sorted(completed),
+            "failed": failed,
+            "flow_rows": total_flow,
+            "activity_rows": total_activity,
+            "price_rows": n_prices,
+        })
+
+        # Throttle antar batch
+        if batch_idx < n_batches - 1:
+            print(f"[pipeline] throttling {delay_seconds}s...")
+            time.sleep(delay_seconds)
+
+    # Final upsert sisa
+    if flow_buffer:
+        total_flow += storage.upsert_broker_flow(pd.DataFrame(flow_buffer))
+    if activity_buffer:
+        total_activity += storage.upsert_broker_activity(pd.DataFrame(activity_buffer))
+
+    notes = f"all_idx {len(all_tickers)} tickers; failed={len(failed)}"
+    storage.log_run(sorted(completed), n_prices, total_flow, notes=notes)
+
+    print(f"[pipeline] DONE. prices={n_prices} flow={total_flow} activity={total_activity} failed={len(failed)}")
+    if failed:
+        print(f"[pipeline] failed tickers: {list(failed.keys())[:20]}...")
+
+    return {
+        "tickers": sorted(completed),
+        "n_prices": n_prices,
+        "n_broker": total_flow,
+        "n_activity": total_activity,
+        "failed": failed,
+    }
