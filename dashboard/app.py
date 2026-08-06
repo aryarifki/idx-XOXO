@@ -1203,7 +1203,12 @@ with st.sidebar:
         latest_broker_date = None
     else:
         selected_ticker = st.selectbox("Ticker", watchlist)
+# 1. Konversi kolom "date" menjadi tipe datetime
+all_activity["date"] = pd.to_datetime(all_activity["date"])
 
+# 2. Kode asli Anda sekarang bisa berjalan dengan normal
+ticker_dates = sorted(all_activity[all_activity["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
+    
         ticker_dates = sorted(all_activity[all_activity["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
         latest_broker_date = max(ticker_dates) if ticker_dates else None
         ticker_price_dates = sorted(all_prices[all_prices["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
