@@ -18,7 +18,6 @@ sys.path.insert(0, str(_ROOT / "src"))
 
 from idx_bandarmology import analysis, broker_api, config, pipeline, storage  # noqa: E402
 
-
 PROFILE_META = {
     "smart_foreign": ("Foreign Smart Money", "Directional foreign institutions"),
     "local_institutional": ("Local Institutions", "Local institution-like accounts"),
