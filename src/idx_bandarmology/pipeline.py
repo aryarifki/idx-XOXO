@@ -15,6 +15,31 @@ Each run:
   5. Logs the run so you can see history in the dashboard.
 """
 
+import time
+from . import config
+
+def run_all_emittens(batch_size: int = 25, delay_per_batch: float = 5.0):
+    """Fetch semua emiten IDX dengan throttling."""
+    # Ambil daftar lengkap (bisa dari file CSV atau API IDX)
+    all_tickers = load_idx_universe()  # ~850 saham
+    
+    total_broker = 0
+    total_activity = 0
+    
+    for i in range(0, len(all_tickers), batch_size):
+        batch = all_tickers[i:i + batch_size]
+        print(f"[pipeline] Batch {i//batch_size + 1}/{(len(all_tickers)-1)//batch_size + 1}")
+        
+        result = run(batch, fetch_broker_data=True)
+        total_broker += result["n_broker"]
+        total_activity += result.get("n_activity", 0)
+        
+        # Throttle antar batch
+        if i + batch_size < len(all_tickers):
+            time.sleep(delay_per_batch)
+    
+    return {"n_broker": total_broker, "n_activity": total_activity}
+    
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
