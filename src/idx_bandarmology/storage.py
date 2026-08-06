@@ -35,8 +35,6 @@ def get_conn() -> Iterator:
         conn.close()
 
 
-# ── Schema ───────────────────────────────────────────────────────────────────
-
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS prices (
     date    {date_type} NOT NULL,
@@ -100,18 +98,17 @@ CREATE INDEX IF NOT EXISTS idx_ba_broker ON broker_activity(broker_code);
 
 def init_db() -> None:
     with get_conn() as conn:
-        cur = conn.cursor()
         if _is_pg():
+            cur = conn.cursor()
             sql = _SCHEMA.format(date_type="DATE", ts_type="TIMESTAMPTZ")
             cur.execute(sql)
             cur.execute(_PG_INDEXES)
+            conn.commit()
+            cur.close()
         else:
-            sql = _SCHEMA.format(date_type="TEXT", ts_type="TEXT")
-            cur.executescript(sql)
-        conn.commit()
+            conn.executescript(_SCHEMA.format(date_type="TEXT", ts_type="TEXT"))
+            conn.commit()
 
-
-# ── Upsert Engine ───────────────────────────────────────────────────────────
 
 def _upsert(df: pd.DataFrame, table: str, cols: list[str], keys: list[str]) -> int:
     if df.empty:
@@ -119,7 +116,7 @@ def _upsert(df: pd.DataFrame, table: str, cols: list[str], keys: list[str]) -> i
     df = df.copy()
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"]).dt.date.astype(str)
-    if "fetched_at" in df.columns and "fetched_at" not in df.columns:
+    if "fetched_at" in cols and "fetched_at" not in df.columns:
         df["fetched_at"] = datetime.now(timezone.utc).isoformat()
 
     with get_conn() as conn:
@@ -151,45 +148,43 @@ def _upsert(df: pd.DataFrame, table: str, cols: list[str], keys: list[str]) -> i
 
 def upsert_prices(df: pd.DataFrame) -> int:
     return _upsert(df, "prices",
-                   ["date","ticker","open","high","low","close","volume"],
-                   ["date","ticker"])
+                   ["date", "ticker", "open", "high", "low", "close", "volume"],
+                   ["date", "ticker"])
 
 
 def upsert_broker_flow(df: pd.DataFrame) -> int:
     return _upsert(df, "broker_flow",
-                   ["date","ticker","bandar_signal","bandar_signal_score",
-                    "foreign_net_broker","local_net_broker","gov_net_broker",
-                    "foreign_net_flow","domestic_net_flow","total_value",
-                    "foreign_signal","conclusion_broker","conclusion_flow","fetched_at"],
-                   ["date","ticker"])
+                   ["date", "ticker", "bandar_signal", "bandar_signal_score",
+                    "foreign_net_broker", "local_net_broker", "gov_net_broker",
+                    "foreign_net_flow", "domestic_net_flow", "total_value",
+                    "foreign_signal", "conclusion_broker", "conclusion_flow", "fetched_at"],
+                   ["date", "ticker"])
 
 
 def upsert_broker_activity(df: pd.DataFrame) -> int:
     return _upsert(df, "broker_activity",
-                   ["date","ticker","broker_code","participant_type",
-                    "buy_value","sell_value","net_value","buy_lot","sell_lot",
-                    "frequency","buy_avg_price","sell_avg_price","fetched_at"],
-                   ["date","ticker","broker_code"])
+                   ["date", "ticker", "broker_code", "participant_type",
+                    "buy_value", "sell_value", "net_value", "buy_lot", "sell_lot",
+                    "frequency", "buy_avg_price", "sell_avg_price", "fetched_at"],
+                   ["date", "ticker", "broker_code"])
 
 
-def log_run(tickers, n_prices, n_broker, notes=""):
+def log_run(tickers: list[str], n_prices: int, n_broker: int, notes: str = "") -> None:
     with get_conn() as conn:
-        cur = conn.cursor()
         ts = datetime.now(timezone.utc)
         if _is_pg():
-            cur.execute(
-                "INSERT INTO runs (run_at, tickers, n_prices, n_broker, notes) VALUES (NOW(), %s, %s, %s, %s)",
-                (",".join(tickers), n_prices, n_broker, notes)
-            )
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO runs (run_at, tickers, n_prices, n_broker, notes) VALUES (NOW(), %s, %s, %s, %s)",
+                    (",".join(tickers), n_prices, n_broker, notes)
+                )
         else:
-            cur.execute(
+            conn.execute(
                 "INSERT INTO runs VALUES (?, ?, ?, ?, ?)",
                 (ts.isoformat(), ",".join(tickers), n_prices, n_broker, notes)
             )
         conn.commit()
 
-
-# ── Read Engine ───────────────────────────────────────────────────────────────
 
 def _read(query: str, params=None):
     with get_conn() as conn:
@@ -199,39 +194,38 @@ def _read(query: str, params=None):
     return df
 
 
-def read_prices(tickers=None):
+def read_prices(tickers: list[str] | None = None):
     init_db()
     q, p = "SELECT * FROM prices", None
     if tickers:
         ph = ", ".join("%s" if _is_pg() else "?" for _ in tickers)
         q += f" WHERE ticker IN ({ph})"
         p = tuple(t.upper() for t in tickers)
-    return _read(q, p).sort_values(["ticker","date"]).reset_index(drop=True)
+    return _read(q, p).sort_values(["ticker", "date"]).reset_index(drop=True)
 
 
-def read_broker_flow(tickers=None):
+def read_broker_flow(tickers: list[str] | None = None):
     init_db()
     q, p = "SELECT * FROM broker_flow", None
     if tickers:
         ph = ", ".join("%s" if _is_pg() else "?" for _ in tickers)
         q += f" WHERE ticker IN ({ph})"
         p = tuple(t.upper() for t in tickers)
-    return _read(q, p).sort_values(["ticker","date"]).reset_index(drop=True)
+    return _read(q, p).sort_values(["ticker", "date"]).reset_index(drop=True)
 
 
-def read_broker_activity(tickers=None):
+def read_broker_activity(tickers: list[str] | None = None):
     init_db()
     q, p = "SELECT * FROM broker_activity", None
     if tickers:
         ph = ", ".join("%s" if _is_pg() else "?" for _ in tickers)
         q += f" WHERE ticker IN ({ph})"
         p = tuple(t.upper() for t in tickers)
-    return _read(q, p).sort_values(["ticker","date","net_value"],
-                                   ascending=[True,True,False]).reset_index(drop=True)
+    return _read(q, p).sort_values(["ticker", "date", "net_value"],
+                                   ascending=[True, True, False]).reset_index(drop=True)
 
 
 def read_runs():
     init_db()
-    q = "SELECT * FROM runs ORDER BY run_at DESC"
-    return _read(q)
- 
+    return _read("SELECT * FROM runs ORDER BY run_at DESC")
+    
