@@ -189,8 +189,13 @@ def log_run(tickers: list[str], n_prices: int, n_broker: int, notes: str = "") -
 def _read(query: str, params=None):
     with get_conn() as conn:
         df = pd.read_sql(query, conn, params=params)
+    # Konversi datetime secara eksplisit dan agresif
     if not df.empty and "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"])
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    if not df.empty and "fetched_at" in df.columns:
+        df["fetched_at"] = pd.to_datetime(df["fetched_at"], errors="coerce")
+    if not df.empty and "run_at" in df.columns:
+        df["run_at"] = pd.to_datetime(df["run_at"], errors="coerce")
     return df
 
 
