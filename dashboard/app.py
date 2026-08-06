@@ -1150,7 +1150,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
 all_broker = storage.read_broker_flow()
 all_activity = storage.read_broker_activity()
 all_prices = storage.read_prices()
@@ -1167,33 +1166,54 @@ available_tickers = (
     else []
 )
 
+data_ready = True
+
 with st.sidebar:
     st.header("Controls")
+
+    # ── Status Debug ─────────────────────────────────────────────────────
+    api_ok = broker_api.is_available()
+    st.caption(f"🗄️ DB rows → prices:{len(all_prices)} | flow:{len(all_broker)} | activity:{len(all_activity)}")
+    st.caption(f"🔑 API token: {'detected' if api_ok else '**MISSING**'}")
+
+    # ── Watchlist Selector ───────────────────────────────────────────────
     if not available_tickers:
         st.warning("No ticker has both broker-flow and broker-activity history yet.")
-        st.stop()
+        if not api_ok:
+            st.error("BROKER_API_TOKEN not configured. Add it to Streamlit Secrets (cloud) or .env (local).")
+        st.info("Use the buttons below to fetch data, or pre-fill the database locally and commit it.")
+        watchlist = [t.strip().upper() for t in config.WATCHLIST]
+        data_ready = False
+    else:
+        default_universe = ",".join(available_tickers)
+        watchlist_input = st.text_input("Universe", value=default_universe)
+        watchlist = [t.strip().upper() for t in watchlist_input.split(",") if t.strip()]
+        watchlist = [t for t in watchlist if t in available_tickers]
 
-    default_universe = ",".join(available_tickers)
-    watchlist_input = st.text_input("Universe", value=default_universe)
-    watchlist = [t.strip().upper() for t in watchlist_input.split(",") if t.strip()]
-    watchlist = [t for t in watchlist if t in available_tickers]
     if not watchlist:
         st.warning("The selected universe has no broker history.")
-        st.stop()
+        data_ready = False
+        selected_ticker = None
+        analysis_ts = None
+        latest_broker_date = None
+    else:
+        selected_ticker = st.selectbox("Ticker", watchlist)
 
-    selected_ticker = st.selectbox("Ticker", watchlist)
-    ticker_dates = sorted(all_activity[all_activity["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
-    latest_broker_date = max(ticker_dates) if ticker_dates else None
-    ticker_price_dates = sorted(all_prices[all_prices["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
-    latest_price_date = max(ticker_price_dates) if ticker_price_dates else None
-    if latest_broker_date:
-        st.caption(f"Latest broker data: {latest_broker_date}")
-    if latest_price_date and latest_price_date != latest_broker_date:
-        st.caption(f"Latest price data: {latest_price_date}")
-    if latest_broker_date and latest_broker_date < date.today():
-        st.warning("Today is not available until broker-flow data is fetched and stored.")
-    analysis_date = st.selectbox("Analysis date", ticker_dates, index=len(ticker_dates) - 1)
-    analysis_ts = pd.Timestamp(analysis_date)
+        ticker_dates = sorted(all_activity[all_activity["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
+        latest_broker_date = max(ticker_dates) if ticker_dates else None
+        ticker_price_dates = sorted(all_prices[all_prices["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
+        latest_price_date = max(ticker_price_dates) if ticker_price_dates else None
+
+        if latest_broker_date:
+            st.caption(f"Latest broker data: {latest_broker_date}")
+        if latest_price_date and latest_price_date != latest_broker_date:
+            st.caption(f"Latest price data: {latest_price_date}")
+        if latest_broker_date and latest_broker_date < date.today():
+            st.warning("Today is not available until broker-flow data is fetched and stored.")
+
+        analysis_date = st.selectbox("Analysis date", ticker_dates, index=len(ticker_dates) - 1) if ticker_dates else None
+        analysis_ts = pd.Timestamp(analysis_date) if analysis_date else None
+
     lookback_label = st.selectbox("Broker window", ["20 calendar days", "30 calendar days", "60 calendar days", "90 calendar days", "180 calendar days"], index=2)
     lookback_days = int(lookback_label.split()[0])
     horizon_label = st.selectbox("Validation horizon", ["1 trading day", "3 trading days", "5 trading days", "10 trading days"], index=3)
@@ -1201,35 +1221,88 @@ with st.sidebar:
     min_events = st.number_input("Min broker events", min_value=3, max_value=30, value=5, step=1)
     min_net_buy_b = st.number_input("Min net buy, Rp B", min_value=0.0, value=0.0, step=0.5)
 
+    # ── Pipeline Actions (selalu tersedia) ───────────────────────────────
     st.divider()
+    target_for_pipeline = watchlist if watchlist else config.WATCHLIST
+
     if st.button("Run latest pipeline to today"):
-        result = pipeline.run(watchlist)
-        if result["n_broker"] == 0:
-            st.error("No broker-flow rows were stored. Check whether the Stockbit/BROKER_API_TOKEN is still valid or whether the upstream endpoint has data.")
+        if not broker_api.is_available():
+            st.error("Cannot run pipeline: BROKER_API_TOKEN is missing.")
         else:
-            st.success(f"Stored {result['n_broker']} flow rows and {result.get('n_activity', 0)} activity rows.")
-            st.rerun()
+            result = pipeline.run(target_for_pipeline)
+            if result["n_broker"] == 0:
+                st.error("No broker-flow rows were stored. Check whether the Stockbit/BROKER_API_TOKEN is still valid or whether the upstream endpoint has data.")
+            else:
+                st.success(f"Stored {result['n_broker']} flow rows and {result.get('n_activity', 0)} activity rows.")
+                st.rerun()
 
     if latest_broker_date and latest_broker_date < date.today():
         missing_start = latest_broker_date + timedelta(days=1)
         if st.button(f"Fetch missing broker dates ({missing_start} to {date.today()})"):
-            result = pipeline.backfill_broker_history(watchlist, missing_start, date.today(), refresh_prices=True)
-            if result["n_broker"] == 0:
-                st.error("No missing broker rows were stored. The broker API returned no usable rows; refresh the Stockbit token or try again after broker data is published.")
+            if not broker_api.is_available():
+                st.error("Cannot backfill: BROKER_API_TOKEN is missing.")
             else:
-                st.success(f"Stored {result['n_broker']} flow rows and {result.get('n_activity', 0)} activity rows.")
-                st.rerun()
+                result = pipeline.backfill_broker_history(target_for_pipeline, missing_start, date.today(), refresh_prices=True)
+                if result["n_broker"] == 0:
+                    st.error("No missing broker rows were stored. The broker API returned no usable rows; refresh the Stockbit token or try again after broker data is published.")
+                else:
+                    st.success(f"Stored {result['n_broker']} flow rows and {result.get('n_activity', 0)} activity rows.")
+                    st.rerun()
 
     backfill_range = st.date_input("Historical backfill range", value=(date.today() - timedelta(days=90), date.today()))
     if st.button("Backfill broker history"):
         if isinstance(backfill_range, tuple) and len(backfill_range) == 2:
-            result = pipeline.backfill_broker_history(watchlist, backfill_range[0], backfill_range[1], refresh_prices=True)
-            if result["n_broker"] == 0:
-                st.error("No broker rows were stored for that range. The broker API returned no usable rows; refresh the Stockbit token or check the selected dates.")
+            if not broker_api.is_available():
+                st.error("Cannot backfill: BROKER_API_TOKEN is missing.")
             else:
-                st.success(f"Stored {result['n_broker']} flow rows and {result.get('n_activity', 0)} activity rows.")
-                st.rerun()
+                result = pipeline.backfill_broker_history(target_for_pipeline, backfill_range[0], backfill_range[1], refresh_prices=True)
+                if result["n_broker"] == 0:
+                    st.error("No broker rows were stored for that range. The broker API returned no usable rows; refresh the Stockbit token or check the selected dates.")
+                else:
+                    st.success(f"Stored {result['n_broker']} flow rows and {result.get('n_activity', 0)} activity rows.")
+                    st.rerun()
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Early-exit ke halaman Setup jika data belum siap
+# ═══════════════════════════════════════════════════════════════════════════════
+if not data_ready or not selected_ticker or not analysis_ts:
+    st.markdown("## 🚀 Getting Started")
+    st.markdown("""
+    The database is currently empty. To populate it:
+
+    **Option A — Streamlit Cloud (Recommended)**
+    1. Go to your app dashboard → **Settings → Secrets**.
+    2. Add your Stockbit token:
+       ```toml
+       BROKER_API_TOKEN = "your_token_here"
+       ```
+    3. Return to this app and click **"Backfill broker history"** in the sidebar.
+    4. Wait for the fetch to complete (this page will refresh automatically).
+
+    **Option B — Local Pre-fill**
+    Run this locally to fill the SQLite file, then commit & push it:
+    ```bash
+    python -c "from idx_bandarmology import pipeline; pipeline.backfill_broker_history(['BBCA','BBRI','GOTO'], '2024-01-01', '2026-08-06')"
+    git add data/db/bandarmology.sqlite
+    git commit -m "chore: seed broker db"
+    git push
+    ```
+
+    **Option C — Local Development**
+    Create a `.env` file in the project root:
+    ```bash
+    BROKER_API_TOKEN=your_token_here
+    ```
+    Then run:
+    ```bash
+    streamlit run Dashboard/app.py
+    ```
+    """)
+    st.stop()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LANJUTKAN KODE LAMA MU DI SINI (dimulai dari window_start = ...)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 window_start = analysis_ts - pd.Timedelta(days=lookback_days)
 price_df = all_prices[all_prices["ticker"] == selected_ticker].copy()
