@@ -100,6 +100,6 @@ WATCHLIST = get_watchlist()
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://idxuser:password_kuat@localhost:5432/bandarmology"
+    "postgresql://idxuser:adryan@localhost:5432/bandarmology"
 )
 DB_TYPE = os.environ.get("DB_TYPE", "sqlite").lower()  # "sqlite" atau "postgres"
