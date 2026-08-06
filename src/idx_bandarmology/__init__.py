@@ -11,5 +11,6 @@ features      : turns raw broker/price tables into a single tidy feature table
 analysis      : descriptive stats, correlations, plots
 modeling      : regression + simple ML to test the "smart money -> price" hypothesis
 """
+"""idx_bandarmology — simple end-to-end bandarmology pipeline for IDX stocks."""
 
-from . import config  # noqa: F401
+from . import config, universe  # noqa: F401
