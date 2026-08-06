@@ -23,6 +23,48 @@ import pandas as pd
 
 from . import broker_api, config, prices, storage
 
+from . import universe
+
+def run_all_emittens(
+    batch_size: int = 50,
+    delay_seconds: float = 3.0,
+    price_period: str = "1y",
+) -> dict:
+    """Fetch ALL IDX tickers with throttling to avoid API ban."""
+    all_tickers = universe.get_idx_universe()
+    if not all_tickers:
+        print("[pipeline] WARNING: could not load IDX universe, falling back to WATCHLIST")
+        all_tickers = config.WATCHLIST
+
+    print(f"[pipeline] universe size: {len(all_tickers)} tickers")
+    storage.init_db()
+
+    total_prices = 0
+    total_broker = 0
+    total_activity = 0
+
+    for i in range(0, len(all_tickers), batch_size):
+        batch = all_tickers[i : i + batch_size]
+        print(f"[pipeline] batch {i//batch_size + 1}/{(len(all_tickers)-1)//batch_size + 1}: {batch[:3]}... ({len(batch)} tickers)")
+
+        result = run(batch, price_period=price_period, fetch_broker_data=True)
+        total_prices += result["n_prices"]
+        total_broker += result["n_broker"]
+        total_activity += result.get("n_activity", 0)
+
+        if i + batch_size < len(all_tickers):
+            print(f"[pipeline] throttling {delay_seconds}s...")
+            import time
+            time.sleep(delay_seconds)
+
+    print(f"[pipeline] DONE. prices={total_prices} broker={total_broker} activity={total_activity}")
+    return {
+        "tickers": all_tickers,
+        "n_prices": total_prices,
+        "n_broker": total_broker,
+        "n_activity": total_activity,
+    }
+    
 
 def _broker_flow_rows(watchlist_results: dict) -> pd.DataFrame:
     """Flatten broker_api.fetch_watchlist() output into one tidy DataFrame.
