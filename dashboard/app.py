@@ -16,7 +16,7 @@ import streamlit as st
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
-from idx_bandarmology import analysis, broker_api, pipeline, storage  # noqa: E402
+from idx_bandarmology import analysis, broker_api, config, pipeline, storage  # noqa: E402
 
 
 PROFILE_META = {
