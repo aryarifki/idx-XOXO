@@ -51,6 +51,32 @@ def get_broker_api_token() -> str | None:
 
 
 BROKER_API_TOKEN = get_broker_api_token()
+# src/idx_bandarmology/config.py
+
+def get_broker_api_token() -> str | None:
+    """Read the latest broker API token from `.env`, process env, or Streamlit Secrets."""
+    load_dotenv(_ROOT / ".env")
+    
+# ── Streamlit Cloud support ──────────────────────────────────────────
+    try:
+        import streamlit as st
+        secret_token = str(st.secrets.get("BROKER_API_TOKEN", "")).strip()
+        if secret_token:
+            if secret_token.lower().startswith("bearer "):
+                secret_token = secret_token[7:].strip()
+            return secret_token
+    except Exception:
+        pass
+    
+# ── Fallback to .env / os.environ ────────────────────────────────────
+    token = (
+        os.environ.get("BROKER_API_TOKEN", "").strip()
+        or os.environ.get("STOCKBIT_TOKEN", "").strip()
+    )
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    return token or None
+    
 
 # ── watchlist ─────────────────────────────────────────────────────────────
 # Start small on purpose — this is a starting point you search/curate by hand.
