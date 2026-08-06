@@ -1152,6 +1152,12 @@ st.markdown(
 all_broker = storage.read_broker_flow()
 all_activity = storage.read_broker_activity()
 all_prices = storage.read_prices()
+
+# ── Defensive: pastikan kolom date selalu datetime ───────────────────────────
+for df in (all_broker, all_activity, all_prices):
+    if not df.empty and "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
 if not all_broker.empty:
     all_broker["ticker"] = all_broker["ticker"].str.upper()
 if not all_activity.empty:
