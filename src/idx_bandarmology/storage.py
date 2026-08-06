@@ -1,19 +1,4 @@
-"""SQLite storage — the landing zone for the pipeline.
-
-Why SQLite (not just CSV)? It's a single file (``data/db/bandarmology.sqlite``)
-that:
-  * Streamlit can query directly with plain SQL / pandas.read_sql.
-  * Metabase (or DBeaver, or anything) can also open later with zero setup —
-    just point it at the file.
-  * Still lets you inspect/export to CSV any time via pandas.
-
-Tables
-------
-prices          : daily OHLCV per ticker (from yfinance)
-broker_flow     : daily broker-flow snapshot per ticker
-broker_activity : daily per-broker buy/sell/net rows per ticker
-runs            : log of each pipeline run, for traceability
-"""
+"""SQLite / PostgreSQL storage — configurable landing zone."""
 
 from __future__ import annotations
 
@@ -26,41 +11,63 @@ import pandas as pd
 
 from . import config
 
+try:
+    import psycopg2
+    from psycopg2.extras import execute_values
+    _HAS_PG = True
+except ImportError:
+    _HAS_PG = False
+
+
+def _is_pg() -> bool:
+    return getattr(config, "DB_TYPE", "sqlite") == "postgres" and _HAS_PG
+
+
+@contextmanager
+def get_conn() -> Iterator:
+    if _is_pg():
+        conn = psycopg2.connect(config.DATABASE_URL)
+    else:
+        conn = sqlite3.connect(str(config.DB_PATH))
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+# ── Schema ───────────────────────────────────────────────────────────────────
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS prices (
-    date    TEXT NOT NULL,
-    ticker  TEXT NOT NULL,
-    open    REAL,
-    high    REAL,
-    low     REAL,
-    close   REAL,
-    volume  REAL,
+    date    {date_type} NOT NULL,
+    ticker  VARCHAR(20) NOT NULL,
+    open    REAL, high REAL, low REAL, close REAL, volume REAL,
     PRIMARY KEY (date, ticker)
 );
 
 CREATE TABLE IF NOT EXISTS broker_flow (
-    date                TEXT NOT NULL,
-    ticker              TEXT NOT NULL,
-    bandar_signal       TEXT,
+    date                {date_type} NOT NULL,
+    ticker              VARCHAR(20) NOT NULL,
+    bandar_signal       VARCHAR(50),
     bandar_signal_score REAL,
-    foreign_net_broker  REAL,   -- from broker summary (foreign net)
+    foreign_net_broker  REAL,
     local_net_broker    REAL,
     gov_net_broker      REAL,
-    foreign_net_flow    REAL,   -- from foreign-vs-domestic flow chart
+    foreign_net_flow    REAL,
     domestic_net_flow   REAL,
     total_value         REAL,
-    foreign_signal      TEXT,
+    foreign_signal      VARCHAR(50),
     conclusion_broker   TEXT,
     conclusion_flow     TEXT,
-    fetched_at          TEXT,
+    fetched_at          {ts_type},
     PRIMARY KEY (date, ticker)
 );
 
 CREATE TABLE IF NOT EXISTS broker_activity (
-    date             TEXT NOT NULL,
-    ticker           TEXT NOT NULL,
-    broker_code      TEXT NOT NULL,
-    participant_type TEXT,
+    date             {date_type} NOT NULL,
+    ticker           VARCHAR(20) NOT NULL,
+    broker_code      VARCHAR(20) NOT NULL,
+    participant_type VARCHAR(20),
     buy_value        REAL,
     sell_value       REAL,
     net_value        REAL,
@@ -69,12 +76,12 @@ CREATE TABLE IF NOT EXISTS broker_activity (
     frequency        REAL,
     buy_avg_price    REAL,
     sell_avg_price   REAL,
-    fetched_at       TEXT,
+    fetched_at       {ts_type},
     PRIMARY KEY (date, ticker, broker_code)
 );
 
 CREATE TABLE IF NOT EXISTS runs (
-    run_at      TEXT NOT NULL,
+    run_at      {ts_type} NOT NULL,
     tickers     TEXT,
     n_prices    INTEGER,
     n_broker    INTEGER,
@@ -82,145 +89,149 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 """
 
-
-@contextmanager
-def get_conn() -> Iterator[sqlite3.Connection]:
-    conn = sqlite3.connect(config.DB_PATH)
-    try:
-        yield conn
-    finally:
-        conn.close()
+_PG_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_prices_td ON prices(ticker, date);
+CREATE INDEX IF NOT EXISTS idx_bf_td ON broker_flow(ticker, date);
+CREATE INDEX IF NOT EXISTS idx_ba_td ON broker_activity(ticker, date);
+CREATE INDEX IF NOT EXISTS idx_ba_date ON broker_activity(date);
+CREATE INDEX IF NOT EXISTS idx_ba_broker ON broker_activity(broker_code);
+"""
 
 
 def init_db() -> None:
-    """Create tables if they don't exist yet. Safe to call every run."""
     with get_conn() as conn:
-        conn.executescript(_SCHEMA)
+        cur = conn.cursor()
+        if _is_pg():
+            sql = _SCHEMA.format(date_type="DATE", ts_type="TIMESTAMPTZ")
+            cur.execute(sql)
+            cur.execute(_PG_INDEXES)
+        else:
+            sql = _SCHEMA.format(date_type="TEXT", ts_type="TEXT")
+            cur.executescript(sql)
         conn.commit()
+
+
+# ── Upsert Engine ───────────────────────────────────────────────────────────
+
+def _upsert(df: pd.DataFrame, table: str, cols: list[str], keys: list[str]) -> int:
+    if df.empty:
+        return 0
+    df = df.copy()
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"]).dt.date.astype(str)
+    if "fetched_at" in df.columns and "fetched_at" not in df.columns:
+        df["fetched_at"] = datetime.now(timezone.utc).isoformat()
+
+    with get_conn() as conn:
+        if _is_pg():
+            tuples = [tuple(row) for row in df[cols].values]
+            update_cols = [c for c in cols if c not in keys]
+            if update_cols:
+                upd = ", ".join(f"{c}=EXCLUDED.{c}" for c in update_cols)
+                q = f"""
+                    INSERT INTO {table} ({', '.join(cols)}) VALUES %s
+                    ON CONFLICT ({', '.join(keys)}) DO UPDATE SET {upd}
+                """
+            else:
+                q = f"""
+                    INSERT INTO {table} ({', '.join(cols)}) VALUES %s
+                    ON CONFLICT ({', '.join(keys)}) DO NOTHING
+                """
+            with conn.cursor() as cur:
+                execute_values(cur, q, tuples, page_size=1000)
+        else:
+            ph = ", ".join("?" * len(cols))
+            upd = ", ".join(f"{c}=excluded.{c}" for c in cols if c not in keys)
+            q = f"""INSERT INTO {table} ({', '.join(cols)}) VALUES ({ph})
+                    ON CONFLICT({', '.join(keys)}) DO UPDATE SET {upd}"""
+            conn.executemany(q, df[cols].values.tolist())
+        conn.commit()
+    return len(df)
 
 
 def upsert_prices(df: pd.DataFrame) -> int:
-    """Insert/replace rows into ``prices``. Returns rows written."""
-    if df.empty:
-        return 0
-    df = df.copy()
-    df["date"] = df["date"].astype(str)
-    with get_conn() as conn:
-        rows = df[["date", "ticker", "open", "high", "low", "close", "volume"]].values.tolist()
-        conn.executemany(
-            """INSERT INTO prices (date, ticker, open, high, low, close, volume)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(date, ticker) DO UPDATE SET
-                 open=excluded.open, high=excluded.high, low=excluded.low,
-                 close=excluded.close, volume=excluded.volume""",
-            rows,
-        )
-        conn.commit()
-    return len(df)
+    return _upsert(df, "prices",
+                   ["date","ticker","open","high","low","close","volume"],
+                   ["date","ticker"])
 
 
 def upsert_broker_flow(df: pd.DataFrame) -> int:
-    """Insert/replace rows into ``broker_flow``. Returns rows written."""
-    if df.empty:
-        return 0
-    df = df.copy()
-    df["date"] = df["date"].astype(str)
-    cols = [
-        "date", "ticker", "bandar_signal", "bandar_signal_score",
-        "foreign_net_broker", "local_net_broker", "gov_net_broker",
-        "foreign_net_flow", "domestic_net_flow", "total_value",
-        "foreign_signal", "conclusion_broker", "conclusion_flow", "fetched_at",
-    ]
-    for c in cols:
-        if c not in df.columns:
-            df[c] = None
-    with get_conn() as conn:
-        rows = df[cols].values.tolist()
-        placeholders = ", ".join("?" * len(cols))
-        updates = ", ".join(f"{c}=excluded.{c}" for c in cols if c not in ("date", "ticker"))
-        conn.executemany(
-            f"""INSERT INTO broker_flow ({', '.join(cols)}) VALUES ({placeholders})
-                ON CONFLICT(date, ticker) DO UPDATE SET {updates}""",
-            rows,
-        )
-        conn.commit()
-    return len(df)
+    return _upsert(df, "broker_flow",
+                   ["date","ticker","bandar_signal","bandar_signal_score",
+                    "foreign_net_broker","local_net_broker","gov_net_broker",
+                    "foreign_net_flow","domestic_net_flow","total_value",
+                    "foreign_signal","conclusion_broker","conclusion_flow","fetched_at"],
+                   ["date","ticker"])
 
 
 def upsert_broker_activity(df: pd.DataFrame) -> int:
-    """Insert/replace per-broker activity rows. Returns rows written."""
-    if df.empty:
-        return 0
-    df = df.copy()
-    df["date"] = df["date"].astype(str)
-    cols = [
-        "date", "ticker", "broker_code", "participant_type",
-        "buy_value", "sell_value", "net_value",
-        "buy_lot", "sell_lot", "frequency",
-        "buy_avg_price", "sell_avg_price", "fetched_at",
-    ]
-    for c in cols:
-        if c not in df.columns:
-            df[c] = None
-    with get_conn() as conn:
-        rows = df[cols].values.tolist()
-        placeholders = ", ".join("?" * len(cols))
-        updates = ", ".join(f"{c}=excluded.{c}" for c in cols if c not in ("date", "ticker", "broker_code"))
-        conn.executemany(
-            f"""INSERT INTO broker_activity ({', '.join(cols)}) VALUES ({placeholders})
-                ON CONFLICT(date, ticker, broker_code) DO UPDATE SET {updates}""",
-            rows,
-        )
-        conn.commit()
-    return len(df)
+    return _upsert(df, "broker_activity",
+                   ["date","ticker","broker_code","participant_type",
+                    "buy_value","sell_value","net_value","buy_lot","sell_lot",
+                    "frequency","buy_avg_price","sell_avg_price","fetched_at"],
+                   ["date","ticker","broker_code"])
 
 
-def log_run(tickers: list[str], n_prices: int, n_broker: int, notes: str = "") -> None:
+def log_run(tickers, n_prices, n_broker, notes=""):
     with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO runs (run_at, tickers, n_prices, n_broker, notes) VALUES (?, ?, ?, ?, ?)",
-            (datetime.now(timezone.utc).isoformat(), ",".join(tickers), n_prices, n_broker, notes),
-        )
+        cur = conn.cursor()
+        ts = datetime.now(timezone.utc)
+        if _is_pg():
+            cur.execute(
+                "INSERT INTO runs (run_at, tickers, n_prices, n_broker, notes) VALUES (NOW(), %s, %s, %s, %s)",
+                (",".join(tickers), n_prices, n_broker, notes)
+            )
+        else:
+            cur.execute(
+                "INSERT INTO runs VALUES (?, ?, ?, ?, ?)",
+                (ts.isoformat(), ",".join(tickers), n_prices, n_broker, notes)
+            )
         conn.commit()
 
 
-def read_prices(tickers: list[str] | None = None) -> pd.DataFrame:
+# ── Read Engine ───────────────────────────────────────────────────────────────
+
+def _read(query: str, params=None):
+    with get_conn() as conn:
+        df = pd.read_sql(query, conn, params=params)
+    if not df.empty and "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def read_prices(tickers=None):
     init_db()
-    q = "SELECT * FROM prices"
-    params: tuple = ()
+    q, p = "SELECT * FROM prices", None
     if tickers:
-        q += f" WHERE ticker IN ({','.join('?' * len(tickers))})"
-        params = tuple(t.upper() for t in tickers)
-    with get_conn() as conn:
-        df = pd.read_sql(q, conn, params=params, parse_dates=["date"])
-    return df.sort_values(["ticker", "date"]).reset_index(drop=True)
+        ph = ", ".join("%s" if _is_pg() else "?" for _ in tickers)
+        q += f" WHERE ticker IN ({ph})"
+        p = tuple(t.upper() for t in tickers)
+    return _read(q, p).sort_values(["ticker","date"]).reset_index(drop=True)
 
 
-def read_broker_flow(tickers: list[str] | None = None) -> pd.DataFrame:
+def read_broker_flow(tickers=None):
     init_db()
-    q = "SELECT * FROM broker_flow"
-    params: tuple = ()
+    q, p = "SELECT * FROM broker_flow", None
     if tickers:
-        q += f" WHERE ticker IN ({','.join('?' * len(tickers))})"
-        params = tuple(t.upper() for t in tickers)
-    with get_conn() as conn:
-        df = pd.read_sql(q, conn, params=params, parse_dates=["date"])
-    return df.sort_values(["ticker", "date"]).reset_index(drop=True)
+        ph = ", ".join("%s" if _is_pg() else "?" for _ in tickers)
+        q += f" WHERE ticker IN ({ph})"
+        p = tuple(t.upper() for t in tickers)
+    return _read(q, p).sort_values(["ticker","date"]).reset_index(drop=True)
 
 
-def read_broker_activity(tickers: list[str] | None = None) -> pd.DataFrame:
+def read_broker_activity(tickers=None):
     init_db()
-    q = "SELECT * FROM broker_activity"
-    params: tuple = ()
+    q, p = "SELECT * FROM broker_activity", None
     if tickers:
-        q += f" WHERE ticker IN ({','.join('?' * len(tickers))})"
-        params = tuple(t.upper() for t in tickers)
-    with get_conn() as conn:
-        df = pd.read_sql(q, conn, params=params, parse_dates=["date"])
-    return df.sort_values(["ticker", "date", "net_value"], ascending=[True, True, False]).reset_index(drop=True)
+        ph = ", ".join("%s" if _is_pg() else "?" for _ in tickers)
+        q += f" WHERE ticker IN ({ph})"
+        p = tuple(t.upper() for t in tickers)
+    return _read(q, p).sort_values(["ticker","date","net_value"],
+                                   ascending=[True,True,False]).reset_index(drop=True)
 
 
-def read_runs() -> pd.DataFrame:
+def read_runs():
     init_db()
-    with get_conn() as conn:
-        return pd.read_sql("SELECT * FROM runs ORDER BY run_at DESC", conn)
+    q = "SELECT * FROM runs ORDER BY run_at DESC"
+    return _read(q)
+ 
