@@ -1181,50 +1181,101 @@ with st.sidebar:
     st.caption(f"🗄️ DB rows → prices:{len(all_prices)} | flow:{len(all_broker)} | activity:{len(all_activity)}")
     st.caption(f"🔑 API token: {'detected' if api_ok else '**MISSING**'}")
 
-    # ── Watchlist Selector ───────────────────────────────────────────────
-    if not available_tickers:
-        st.warning("No ticker has both broker-flow and broker-activity history yet.")
-        if not api_ok:
-            st.error("BROKER_API_TOKEN not configured. Add it to Streamlit Secrets (cloud) or .env (local).")
-        st.info("Use the buttons below to fetch data, or pre-fill the database locally and commit it.")
-        watchlist = [t.strip().upper() for t in config.WATCHLIST]
-        data_ready = False
-    else:
-        default_universe = ",".join(available_tickers)
-        watchlist_input = st.text_input("Universe", value=default_universe)
-        watchlist = [t.strip().upper() for t in watchlist_input.split(",") if t.strip()]
-        watchlist = [t for t in watchlist if t in available_tickers]
+    # ── Universe Mode ──────────────────────────────────────────────────
+    universe_mode = st.radio(
+        "Universe mode",
+        ["Watchlist only", "All IDX + manual"],
+        index=0,
+        help="Watchlist = hanya saham yang sudah di-fetch. All IDX = bisa ketik saham baru."
+    )
 
+    if universe_mode == "Watchlist only":
+        # Mode lama: hanya saham yang punya data broker + activity
+        if not available_tickers:
+            st.warning("No ticker has both broker-flow and broker-activity history yet.")
+            if not api_ok:
+                st.error("BROKER_API_TOKEN not configured.")
+            watchlist = []
+            data_ready = False
+        else:
+            default_universe = ",".join(available_tickers)
+            watchlist_input = st.text_input("Universe", value=default_universe)
+            watchlist = [t.strip().upper() for t in watchlist_input.split(",") if t.strip()]
+            watchlist = [t for t in watchlist if t in available_tickers]
+            data_ready = bool(watchlist)
+
+    else:
+        # Mode bebas: input manual + fetch on-demand
+        st.info("Mode ini memungkinkan analisis saham baru. Data broker akan di-fetch jika tersedia.")
+        
+        # Load semua emiten IDX (dari cache/file)
+        try:
+            idx_all = universe.get_idx_universe()
+        except Exception:
+            idx_all = available_tickers or config.WATCHLIST
+        
+        # Input manual
+        manual_input = st.text_input(
+            "Ticker (pisahkan koma)",
+            value="BBCA",
+            help="Contoh: ADRO, PTBA, KLBF. Data akan di-fetch otomatis jika belum ada."
+        )
+        manual_tickers = [t.strip().upper() for t in manual_input.split(",") if t.strip()]
+        
+        # Validasi: peringati kalau format tidak valid
+        invalid = [t for t in manual_tickers if len(t) > 4 or not t.isalpha()]
+        if invalid:
+            st.warning(f"Ticker mungkin tidak valid: {', '.join(invalid)}")
+        
+        watchlist = manual_tickers
+        data_ready = bool(watchlist)
+        
+        # Tombol fetch sekarang (untuk saham baru)
+        if st.button("🔄 Fetch data for manual tickers now"):
+            if not api_ok:
+                st.error("API token tidak tersedia untuk fetch.")
+            else:
+                with st.spinner("Fetching broker data..."):
+                    result = pipeline.run(manual_tickers)
+                    if result["n_broker"] > 0:
+                        st.success(f"Stored {result['n_broker']} flow rows for {', '.join(manual_tickers)}")
+                        st.rerun()
+                    else:
+                        st.error("Fetch gagal atau saham tidak ditemukan di broker API.")
+
+    # ── Ticker Selector ──────────────────────────────────────────────────
     if not watchlist:
-        st.warning("The selected universe has no broker history.")
-        data_ready = False
+        st.warning("Masukkan minimal 1 ticker.")
         selected_ticker = None
         analysis_ts = None
-        latest_broker_date = None
+        data_ready = False
     else:
         selected_ticker = st.selectbox("Ticker", watchlist)
         
-        # 1. Konversi dan proses all_activity (Sudah benar)
-        all_activity["date"] = pd.to_datetime(all_activity["date"])
-        ticker_dates = sorted(all_activity[all_activity["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
+        # Cari tanggal yang tersedia untuk ticker ini
+        ticker_activity = all_activity[all_activity["ticker"] == selected_ticker] if not all_activity.empty else pd.DataFrame()
+        ticker_flow = all_broker[all_broker["ticker"] == selected_ticker] if not all_broker.empty else pd.DataFrame()
+        
+        ticker_dates = sorted(ticker_activity["date"].dt.date.unique().tolist()) if not ticker_activity.empty else []
+        flow_dates = sorted(ticker_flow["date"].dt.date.unique().tolist()) if not ticker_flow.empty else []
+        
         latest_broker_date = max(ticker_dates) if ticker_dates else None
+        latest_price_date = max(flow_dates) if flow_dates else None
         
-        # 2. TAMBAHKAN INI: Konversi kolom date di all_prices
-        all_prices["date"] = pd.to_datetime(all_prices["date"])
-        
-        # 3. Proses all_prices (Sekarang tidak akan error lagi)
-        ticker_price_dates = sorted(all_prices[all_prices["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
-        latest_price_date = max(ticker_price_dates) if ticker_price_dates else None
-
         if latest_broker_date:
             st.caption(f"Latest broker data: {latest_broker_date}")
         if latest_price_date and latest_price_date != latest_broker_date:
             st.caption(f"Latest price data: {latest_price_date}")
-        if latest_broker_date and latest_broker_date < date.today():
-            st.warning("Today is not available until broker-flow data is fetched and stored.")
-
+        
         analysis_date = st.selectbox("Analysis date", ticker_dates, index=len(ticker_dates) - 1) if ticker_dates else None
         analysis_ts = pd.Timestamp(analysis_date) if analysis_date else None
+        
+        if analysis_ts is None and not all_prices.empty:
+            # Fallback ke harga saja kalau belum ada data broker
+            px_dates = sorted(all_prices[all_prices["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
+            if px_dates:
+                analysis_date = st.selectbox("Analysis date (price only)", px_dates, index=len(px_dates) - 1)
+                analysis_ts = pd.Timestamp(analysis_date)
 
     lookback_label = st.selectbox("Broker window", ["20 calendar days", "30 calendar days", "60 calendar days", "90 calendar days", "180 calendar days"], index=2)
     lookback_days = int(lookback_label.split()[0])
