@@ -1,4 +1,4 @@
-"""SQLite / PostgreSQL storage — configurable landing zone."""
+"""PostgreSQL-only storage — landing zone for IDX Bandarmology."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ except ImportError:
 
 
 def _is_pg() -> bool:
-    return getattr(config, "DB_TYPE", "sqlite") == "postgres" and _HAS_PG
+    return getattr(config, "DB_TYPE", "postgres") == "postgres" and _HAS_PG
 
 
 @contextmanager
@@ -79,11 +79,10 @@ CREATE TABLE IF NOT EXISTS broker_activity (
 );
 
 CREATE TABLE IF NOT EXISTS idx_universe (
-    ticker       VARCHAR(20) PRIMARY KEY,
-    name         VARCHAR(100),
-    sector       VARCHAR(50),
-    listed_date  {date_type},
-    updated_at   {ts_type}
+    ticker      VARCHAR(20) PRIMARY KEY,
+    name        VARCHAR(100),
+    sector      VARCHAR(50),
+    updated_at  {ts_type}
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -101,7 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_bf_td ON broker_flow(ticker, date);
 CREATE INDEX IF NOT EXISTS idx_ba_td ON broker_activity(ticker, date);
 CREATE INDEX IF NOT EXISTS idx_ba_date ON broker_activity(date);
 CREATE INDEX IF NOT EXISTS idx_ba_broker ON broker_activity(broker_code);
-CREATE INDEX IF NOT EXISTS idx_uni_updated ON idx_universe(updated_at);
+CREATE INDEX IF NOT EXISTS idx_uni_ticker ON idx_universe(ticker);
 """
 
 
@@ -127,6 +126,8 @@ def _upsert(df: pd.DataFrame, table: str, cols: list[str], keys: list[str]) -> i
         df["date"] = pd.to_datetime(df["date"]).dt.date.astype(str)
     if "fetched_at" in cols and "fetched_at" not in df.columns:
         df["fetched_at"] = datetime.now(timezone.utc).isoformat()
+    if "updated_at" in cols and "updated_at" not in df.columns:
+        df["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     with get_conn() as conn:
         if _is_pg():
@@ -180,7 +181,7 @@ def upsert_broker_activity(df: pd.DataFrame) -> int:
 
 def upsert_idx_universe(df: pd.DataFrame) -> int:
     return _upsert(df, "idx_universe",
-                   ["ticker", "name", "sector", "listed_date", "updated_at"],
+                   ["ticker", "name", "sector", "updated_at"],
                    ["ticker"])
 
 
@@ -204,7 +205,6 @@ def log_run(tickers: list[str], n_prices: int, n_broker: int, notes: str = "") -
 def _read(query: str, params=None):
     with get_conn() as conn:
         df = pd.read_sql(query, conn, params=params)
-    # Konversi datetime secara eksplisit dan agresif
     if not df.empty and "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
     if not df.empty and "fetched_at" in df.columns:
@@ -213,8 +213,6 @@ def _read(query: str, params=None):
         df["run_at"] = pd.to_datetime(df["run_at"], errors="coerce")
     if not df.empty and "updated_at" in df.columns:
         df["updated_at"] = pd.to_datetime(df["updated_at"], errors="coerce")
-    if not df.empty and "listed_date" in df.columns:
-        df["listed_date"] = pd.to_datetime(df["listed_date"], errors="coerce")
     return df
 
 
@@ -259,21 +257,20 @@ def read_runs():
     return _read("SELECT * FROM runs ORDER BY run_at DESC")
 
 
-def get_db_info() -> str:
-    """Return a human-readable database connection string for display."""
+def get_db_info() -> dict:
+    """Return DB connection info with masked password."""
     if _is_pg():
-        # Mask password for security
-        url = config.DATABASE_URL
-        try:
-            # postgresql://user:pass@host:port/db
-            parts = url.split("@")
-            if len(parts) == 2:
-                creds = parts[0].split("://")[-1].split(":")
-                if len(creds) >= 2:
-                    masked = f"postgresql://{creds[0]}:***@{parts[1]}"
-                    return masked
-        except Exception:
-            pass
-        return "PostgreSQL (connected)"
-    return f"SQLite: {config.DB_PATH}"
-                    
+        url = getattr(config, "DATABASE_URL", "")
+        masked = url
+        if "@" in masked and "://" in masked:
+            try:
+                proto, rest = masked.split("://", 1)
+                creds, hostpart = rest.split("@", 1)
+                if ":" in creds:
+                    user = creds.split(":")[0]
+                    masked = f"{proto}://{user}:****@{hostpart}"
+            except Exception:
+                pass
+        return {"type": "postgresql", "url": url, "masked_url": masked}
+    return {"type": "sqlite", "path": str(config.DB_PATH), "masked_url": str(config.DB_PATH)}
+    
