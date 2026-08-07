@@ -16,7 +16,7 @@ import streamlit as st
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
-from idx_bandarmology import analysis, broker_api, config, pipeline, storage, universe  # noqa: E402
+from idx_bandarmology import analysis, broker_api, config, pipeline, storage  # noqa: E402
 
 PROFILE_META = {
     "smart_foreign": ("Foreign Smart Money", "Directional foreign institutions"),
@@ -375,11 +375,11 @@ def render_profile_flow(profile_df: pd.DataFrame) -> None:
             '<div class="bar-track">'
             f'<div class="bar-fill" style="width:{width:.1f}%; background:{color};"></div>'
             "</div>"
-            f'<div class="chip-row">{"" .join(chips)}</div>'
+            f'<div class="chip-row">{"".join(chips)}</div>'
             "</div>"
         )
     html.append("</div>")
-    st.markdown("" .join(html), unsafe_allow_html=True)
+    st.markdown("".join(html), unsafe_allow_html=True)
 
 
 def style_table(df: pd.DataFrame, money_cols: list[str] | None = None, pct_cols: list[str] | None = None):
@@ -702,7 +702,7 @@ def sparkline_values(activity: pd.DataFrame, broker_code: str, end_ts: pd.Timest
     chars = []
     for value in sub["net_value"].fillna(0):
         chars.append("+" if value > 0 else "-" if value < 0 else "0")
-    return "" .join(chars)
+    return "".join(chars)
 
 
 def top_broker_compact_table(top_buy: pd.DataFrame, top_sell: pd.DataFrame, activity: pd.DataFrame, end_ts: pd.Timestamp) -> pd.DataFrame:
@@ -996,63 +996,31 @@ def broker_summary_table(dist: pd.DataFrame, distribution_data: dict[str, object
     return pd.DataFrame(rows)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# OPTIMIZED SCREENER — pre-compute aggregates for 800+ tickers
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def build_screener(watchlist: list[str], as_of: pd.Timestamp, scan_df: pd.DataFrame,
-                   all_prices: pd.DataFrame, all_flow: pd.DataFrame, all_activity: pd.DataFrame) -> pd.DataFrame:
-    """Build screener table. Optimized with pre-computed maps for bulk tickers."""
+def build_screener(watchlist: list[str], as_of: pd.Timestamp, scan_df: pd.DataFrame, all_prices: pd.DataFrame, all_flow: pd.DataFrame, all_activity: pd.DataFrame) -> pd.DataFrame:
     rows = []
-
-    # Pre-compute top buyers for all tickers at once
-    top_buyers_map = {}
-    if not all_activity.empty:
-        act_sub = all_activity[all_activity["date"] <= as_of].copy()
-        if not act_sub.empty:
-            latest_dates = act_sub.groupby("ticker")["date"].max().reset_index()
-            latest_act = act_sub.merge(latest_dates, on=["ticker", "date"])
-            buyers = latest_act[latest_act["net_value"] > 0].sort_values("net_value", ascending=False)
-            for ticker, group in buyers.groupby("ticker"):
-                top_buyers_map[ticker] = group.iloc[0]["broker_code"]
-
-    # Pre-compute foreign net 5d for all tickers
-    foreign_5d_map = {}
-    if not all_flow.empty:
-        flow_sub = all_flow[all_flow["date"] <= as_of].sort_values(["ticker", "date"])
-        for ticker, group in flow_sub.groupby("ticker"):
-            last5 = group.tail(5)
-            foreign_5d_map[ticker] = float(last5["foreign_net_broker"].fillna(0).sum())
-
-    # Pre-compute 5d returns for all tickers
-    ret_5d_map = {}
-    if not all_prices.empty:
-        for ticker in watchlist:
-            px = all_prices[all_prices["ticker"] == ticker]
-            ret = return_to_date(px, as_of, 5)
-            if ret is not None:
-                ret_5d_map[ticker] = ret
-
     for ticker in watchlist:
         flow_row = flow_row_at(all_flow, ticker, as_of)
-        if not flow_row:
+        act_date = latest_activity_date(all_activity, ticker, as_of)
+        if not flow_row or act_date is None:
             continue
-
-        foreign_5d = foreign_5d_map.get(ticker, np.nan)
-        top_buyer = top_buyers_map.get(ticker, "-")
-        ret_5d = ret_5d_map.get(ticker)
-
+        px = all_prices[all_prices["ticker"] == ticker]
+        flow_sub = all_flow[(all_flow["ticker"] == ticker) & (all_flow["date"] <= as_of)].sort_values("date")
+        foreign_5d = float(flow_sub.tail(5)["foreign_net_broker"].fillna(0).sum()) if not flow_sub.empty else np.nan
+        buyers, _ = analysis.top_net_broker_summary(ticker, trade_date=act_date, top_n=1)
+        top_buyer = "-" if buyers.empty else str(buyers.iloc[0]["broker_code"])
+        ret_5d = return_to_date(px, as_of, 5)
         conv = conviction_score(flow_row.get("bandar_signal"), foreign_5d, scan_df, ticker)
-        rows.append({
-            "Ticker": ticker,
-            "Signal": fmt_signal(flow_row.get("bandar_signal")),
-            "Conviction Score": conv["score"],
-            "Foreign Net (5D)": foreign_5d,
-            "Top Buyer": top_buyer,
-            "5D Return": ret_5d,
-            "Data Date": pd.Timestamp(flow_row.get("date")).date(),
-        })
-
+        rows.append(
+            {
+                "Ticker": ticker,
+                "Signal": fmt_signal(flow_row.get("bandar_signal")),
+                "Conviction Score": conv["score"],
+                "Foreign Net (5D)": foreign_5d,
+                "Top Buyer": top_buyer,
+                "5D Return": ret_5d,
+                "Data Date": pd.Timestamp(flow_row.get("date")).date(),
+            }
+        )
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows).sort_values("Conviction Score", ascending=False).reset_index(drop=True)
@@ -1181,10 +1149,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── Database info ───────────────────────────────────────────────────────────
-db_info = storage.get_db_info()
-
-# ── Load data ───────────────────────────────────────────────────────────────
 all_broker = storage.read_broker_flow()
 all_activity = storage.read_broker_activity()
 all_prices = storage.read_prices()
@@ -1212,34 +1176,12 @@ data_ready = True
 with st.sidebar:
     st.header("Controls")
 
-    # ── DB Status ──────────────────────────────────────────────────────
-    st.caption(f"🔌 {db_info}")
-    st.caption(f"🗄️ DB rows → prices:{len(all_prices)} | flow:{len(all_broker)} | activity:{len(all_activity)}")
-
+    # ── Status Debug ─────────────────────────────────────────────────────
     api_ok = broker_api.is_available()
+    st.caption(f"🗄️ DB rows → prices:{len(all_prices)} | flow:{len(all_broker)} | activity:{len(all_activity)}")
     st.caption(f"🔑 API token: {'detected' if api_ok else '**MISSING**'}")
 
-    # ── IDX Universe ───────────────────────────────────────────────────
-    st.divider()
-    st.subheader("IDX Universe")
-
-    try:
-        idx_universe_list = universe.get_idx_universe()
-        st.caption(f"📋 Universe: {len(idx_universe_list)} tickers cached")
-    except Exception:
-        idx_universe_list = available_tickers or config.WATCHLIST
-        st.caption(f"📋 Universe: {len(idx_universe_list)} tickers (fallback)")
-
-    if st.button("🔄 Refresh Universe from IDX API"):
-        with st.spinner("Fetching from IDX API..."):
-            new_universe = universe.refresh_idx_universe()
-            st.success(f"Loaded {len(new_universe)} tickers")
-            st.rerun()
-
-    st.caption("Auto-detects new IPOs when refreshed")
-
     # ── Universe Mode ──────────────────────────────────────────────────
-    st.divider()
     universe_mode = st.radio(
         "Universe mode",
         ["Watchlist only", "All IDX + manual"],
@@ -1248,6 +1190,7 @@ with st.sidebar:
     )
 
     if universe_mode == "Watchlist only":
+        # Mode lama: hanya saham yang punya data broker + activity
         if not available_tickers:
             st.warning("No ticker has both broker-flow and broker-activity history yet.")
             if not api_ok:
@@ -1262,27 +1205,32 @@ with st.sidebar:
             data_ready = bool(watchlist)
 
     else:
+        # Mode bebas: input manual + fetch on-demand
         st.info("Mode ini memungkinkan analisis saham baru. Data broker akan di-fetch jika tersedia.")
-
+        
+        # Load semua emiten IDX (dari cache/file)
         try:
             idx_all = universe.get_idx_universe()
         except Exception:
             idx_all = available_tickers or config.WATCHLIST
-
+        
+        # Input manual
         manual_input = st.text_input(
             "Ticker (pisahkan koma)",
             value="BBCA",
             help="Contoh: ADRO, PTBA, KLBF. Data akan di-fetch otomatis jika belum ada."
         )
         manual_tickers = [t.strip().upper() for t in manual_input.split(",") if t.strip()]
-
+        
+        # Validasi: peringati kalau format tidak valid
         invalid = [t for t in manual_tickers if len(t) > 4 or not t.isalpha()]
         if invalid:
-            st.warning(f"Ticker mungkin tidak valid: {', ' .join(invalid)}")
-
+            st.warning(f"Ticker mungkin tidak valid: {', '.join(invalid)}")
+        
         watchlist = manual_tickers
         data_ready = bool(watchlist)
-
+        
+        # Tombol fetch sekarang (untuk saham baru)
         if st.button("🔄 Fetch data for manual tickers now"):
             if not api_ok:
                 st.error("API token tidak tersedia untuk fetch.")
@@ -1290,12 +1238,13 @@ with st.sidebar:
                 with st.spinner("Fetching broker data..."):
                     result = pipeline.run(manual_tickers)
                     if result["n_broker"] > 0:
-                        st.success(f"Stored {result['n_broker']} flow rows for {', ' .join(manual_tickers)}")
+                        st.success(f"Stored {result['n_broker']} flow rows for {', '.join(manual_tickers)}")
                         st.rerun()
                     else:
                         st.error("Fetch gagal atau saham tidak ditemukan di broker API.")
 
     # ── Ticker Selector ──────────────────────────────────────────────────
+    latest_broker_date = None 
     if not watchlist:
         st.warning("Masukkan minimal 1 ticker.")
         selected_ticker = None
@@ -1303,25 +1252,27 @@ with st.sidebar:
         data_ready = False
     else:
         selected_ticker = st.selectbox("Ticker", watchlist)
-
+        
+        # Cari tanggal yang tersedia untuk ticker ini
         ticker_activity = all_activity[all_activity["ticker"] == selected_ticker] if not all_activity.empty else pd.DataFrame()
         ticker_flow = all_broker[all_broker["ticker"] == selected_ticker] if not all_broker.empty else pd.DataFrame()
-
+        
         ticker_dates = sorted(ticker_activity["date"].dt.date.unique().tolist()) if not ticker_activity.empty else []
         flow_dates = sorted(ticker_flow["date"].dt.date.unique().tolist()) if not ticker_flow.empty else []
-
+        
         latest_broker_date = max(ticker_dates) if ticker_dates else None
         latest_price_date = max(flow_dates) if flow_dates else None
-
+        
         if latest_broker_date:
             st.caption(f"Latest broker data: {latest_broker_date}")
         if latest_price_date and latest_price_date != latest_broker_date:
             st.caption(f"Latest price data: {latest_price_date}")
-
+        
         analysis_date = st.selectbox("Analysis date", ticker_dates, index=len(ticker_dates) - 1) if ticker_dates else None
         analysis_ts = pd.Timestamp(analysis_date) if analysis_date else None
-
+        
         if analysis_ts is None and not all_prices.empty:
+            # Fallback ke harga saja kalau belum ada data broker
             px_dates = sorted(all_prices[all_prices["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
             if px_dates:
                 analysis_date = st.selectbox("Analysis date (price only)", px_dates, index=len(px_dates) - 1)
@@ -1334,7 +1285,7 @@ with st.sidebar:
     min_events = st.number_input("Min broker events", min_value=3, max_value=30, value=5, step=1)
     min_net_buy_b = st.number_input("Min net buy, Rp B", min_value=0.0, value=0.0, step=0.5)
 
-    # ── Pipeline Actions ───────────────────────────────────────────────
+    # ── Pipeline Actions (selalu tersedia) ───────────────────────────────
     st.divider()
     target_for_pipeline = watchlist if watchlist else config.WATCHLIST
 
@@ -1375,42 +1326,35 @@ with st.sidebar:
                     st.success(f"Stored {result['n_broker']} flow rows and {result.get('n_activity', 0)} activity rows.")
                     st.rerun()
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Early-exit ke halaman Setup jika data belum siap
 # ═══════════════════════════════════════════════════════════════════════════════
 if not data_ready or not selected_ticker or not analysis_ts:
     st.markdown("## 🚀 Getting Started")
-    st.markdown(f"""
-    **Database connection:** `{db_info}`
-
-    The database is currently empty or no ticker is selected. To populate it:
+    st.markdown("""
+    The database is currently empty. To populate it:
 
     **Option A — Streamlit Cloud (Recommended)**
     1. Go to your app dashboard → **Settings → Secrets**.
-    2. Add your PostgreSQL credentials:
+    2. Add your Stockbit token:
        ```toml
-       DB_TYPE = "postgres"
-       DATABASE_URL = "postgresql://idxapp:PASSWORD@IP_PUBLIK_DEBIAN:5432/bandarmology"
        BROKER_API_TOKEN = "your_token_here"
        ```
     3. Return to this app and click **"Backfill broker history"** in the sidebar.
     4. Wait for the fetch to complete (this page will refresh automatically).
 
-    **Option B — Debian Server (Initial Backfill)**
-    Run on your Debian server:
+    **Option B — Local Pre-fill**
+    Run this locally to fill the SQLite file, then commit & push it:
     ```bash
-    export PYTHONPATH=/opt/idx-xoxo/src
-    export DB_TYPE=postgres
-    export DATABASE_URL="postgresql://idxapp:PASSWORD@127.0.0.1:5432/bandarmology"
-    python -c "from idx_bandarmology import pipeline; pipeline.run_all_idx(batch_size=20, delay_seconds=5)"
+    python -c "from idx_bandarmology import pipeline; pipeline.backfill_broker_history(['BBCA','BBRI','GOTO'], '2024-01-01', '2026-08-06')"
+    git add data/db/bandarmology.sqlite
+    git commit -m "chore: seed broker db"
+    git push
     ```
 
     **Option C — Local Development**
     Create a `.env` file in the project root:
     ```bash
-    DB_TYPE=postgres
-    DATABASE_URL=postgresql://idxapp:PASSWORD@IP_DEBIAN:5432/bandarmology
     BROKER_API_TOKEN=your_token_here
     ```
     Then run:
@@ -1421,7 +1365,7 @@ if not data_ready or not selected_ticker or not analysis_ts:
     st.stop()
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# MAIN DASHBOARD CONTENT
+# LANJUTKAN KODE LAMA MU DI SINI (dimulai dari window_start = ...)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 window_start = analysis_ts - pd.Timedelta(days=lookback_days)
@@ -1499,8 +1443,8 @@ with k6:
 render_alerts(alerts)
 render_verdict(verdict)
 
-overview_tab, flow_tab, causality_tab, validation_tab, screener_tab, raw_tab = st.tabs(
-    ["Overview", "Broker Flow", "Causality Insight", "Validation", "Screener", "Raw Tables"]
+overview_tab, flow_tab, causality_tab, validation_tab, screener_tab, live_db_tab, raw_tab = st.tabs(
+    ["Overview", "Broker Flow", "Causality Insight", "Validation", "Screener", "Live Database", "Raw Tables"]
 )
 
 with overview_tab:
@@ -1793,61 +1737,275 @@ with validation_tab:
         event_view["Signal"] = event_view["Signal"].map(fmt_signal)
         st.dataframe(event_view, use_container_width=True, hide_index=True)
 
-
 with screener_tab:
     st.subheader("Multi-Ticker Screener")
-
-    screener_mode = st.radio(
-        "Screener scope",
-        ["Current watchlist only", "All IDX universe (from DB)"],
-        index=1,
-        help="All IDX queries every ticker stored in your database. This may take a moment for 800+ stocks."
-    )
-
     only_acc = st.toggle("Show only Accumulation / Strong Accumulation", value=True)
-
-    if screener_mode == "All IDX universe (from DB)":
-        # Use all tickers that have broker_flow data in the database
-        all_tickers_in_db = sorted(set(
-            list(all_broker["ticker"].unique()) if not all_broker.empty else []
-        ))
-        screener_watchlist = all_tickers_in_db
-        st.caption(f"Screening {len(screener_watchlist)} tickers from database...")
-    else:
-        screener_watchlist = watchlist
-        st.caption(f"Screening {len(screener_watchlist)} tickers from current watchlist...")
-
-    # Use global latest date for screener when in All IDX mode
-    if screener_mode == "All IDX universe (from DB)" and not all_broker.empty:
-        global_latest = all_broker["date"].max()
-        screener_as_of = global_latest if pd.notna(global_latest) else analysis_ts
-    else:
-        screener_as_of = analysis_ts
-
-    screener = build_screener(screener_watchlist, screener_as_of, scan_h, all_prices, all_broker, all_activity)
-
+    screener = build_screener(watchlist, analysis_ts, scan_h, all_prices, all_broker, all_activity)
     if only_acc and not screener.empty:
         screener = screener[screener["Signal"].isin(["Accumulation", "Strong Accumulation", "Net Buy"])]
-
     if screener.empty:
         st.caption("No tickers match the current screener filter.")
     else:
-        st.metric("Total tickers matching filter", len(screener))
         st.dataframe(
             style_table(screener, money_cols=["Foreign Net (5D)"], pct_cols=["5D Return"]),
             use_container_width=True,
             hide_index=True,
         )
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB: LIVE DATABASE — Real-time Monitor
+# ═══════════════════════════════════════════════════════════════════════════════
+with live_db_tab:
+    st.header("📡 Live Database Monitor")
+    st.caption(f"Real-time data from PostgreSQL • Last refresh: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-        # Download button
-        csv = screener.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="📥 Download screener CSV",
-            data=csv,
-            file_name=f"idx_screener_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv",
+    # ── 1. BANDAR SIGNAL (Broker Analysis) ──────────────────────────────
+    st.subheader("🎯 Bandar Signal (Latest per Ticker)")
+    
+    if all_broker.empty:
+        st.warning("No broker_flow data in database.")
+    else:
+        # Ambil data terbaru per ticker
+        latest_signals = (
+            all_broker.sort_values("date")
+            .groupby("ticker")
+            .last()
+            .reset_index()
+            [["ticker", "date", "bandar_signal", "bandar_signal_score", 
+              "foreign_net_broker", "local_net_broker", "gov_net_broker",
+              "foreign_signal", "total_value", "fetched_at"]]
+        )
+        
+        # Format untuk tampilan
+        latest_signals["Signal"] = latest_signals["bandar_signal"].map(fmt_signal)
+        latest_signals["Score"] = latest_signals["bandar_signal_score"].fillna(0)
+        latest_signals["Foreign Net"] = latest_signals["foreign_net_broker"].apply(fmt_rp)
+        latest_signals["Local Net"] = latest_signals["local_net_broker"].apply(fmt_rp)
+        latest_signals["Gov Net"] = latest_signals["gov_net_broker"].apply(fmt_rp)
+        latest_signals["Total Value"] = latest_signals["total_value"].apply(fmt_rp)
+        latest_signals["Date"] = pd.to_datetime(latest_signals["date"]).dt.strftime("%Y-%m-%d")
+        
+        # Filter & Search
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            signal_filter = st.multiselect(
+                "Filter Signal", 
+                options=latest_signals["Signal"].unique(),
+                default=[]
+            )
+        with c2:
+            search_ticker = st.text_input("🔍 Cari Ticker", placeholder="Contoh: BBCA, BBRI")
+        
+        filtered = latest_signals.copy()
+        if signal_filter:
+            filtered = filtered[filtered["Signal"].isin(signal_filter)]
+        if search_ticker:
+            filtered = filtered[filtered["ticker"].str.contains(search_ticker.upper(), na=False)]
+        
+        # Tampilkan tabel
+        display_cols = ["ticker", "Date", "Signal", "Score", "Foreign Net", 
+                       "Local Net", "Gov Net", "Total Value"]
+        st.dataframe(
+            filtered[display_cols].rename(columns={"ticker": "Ticker"}),
+            use_container_width=True,
+            hide_index=True,
+            height=400
+        )
+        
+        # Metrik ringkasan
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("Total Tickers", len(latest_signals))
+        with m2:
+            acc_count = len(latest_signals[latest_signals["Signal"].isin(["Accumulation", "Strong Accumulation", "Net Buy"])])
+            st.metric("Accumulation", acc_count, delta=f"{acc_count/len(latest_signals)*100:.1f}%")
+        with m3:
+            dist_count = len(latest_signals[latest_signals["Signal"].isin(["Distribution", "Strong Distribution", "Net Sell"])])
+            st.metric("Distribution", dist_count, delta=f"{dist_count/len(latest_signals)*100:.1f}%")
+        with m4:
+            neu_count = len(latest_signals[latest_signals["Signal"].isin(["Neutral", "Netral"])])
+            st.metric("Neutral", neu_count, delta=f"{neu_count/len(latest_signals)*100:.1f}%")
+
+    st.divider()
+
+    # ── 2. FOREIGN / DOMESTIC FLOW ──────────────────────────────────────
+    st.subheader("🌍 Foreign / Domestic Flow Summary")
+    
+    if all_broker.empty:
+        st.warning("No flow data available.")
+    else:
+        # Agregasi per hari
+        daily_flow = (
+            all_broker.groupby("date")
+            .agg(
+                foreign_net=("foreign_net_flow", "sum"),
+                domestic_net=("domestic_net_flow", "sum"),
+                total_value=("total_value", "sum"),
+                tickers=("ticker", "nunique")
+            )
+            .reset_index()
+            .sort_values("date", ascending=False)
+            .head(30)
+        )
+        
+        daily_flow["Foreign Net"] = daily_flow["foreign_net"].apply(fmt_rp)
+        daily_flow["Domestic Net"] = daily_flow["domestic_net"].apply(fmt_rp)
+        daily_flow["Total Value"] = daily_flow["total_value"].apply(fmt_rp)
+        daily_flow["Date"] = pd.to_datetime(daily_flow["date"]).dt.strftime("%Y-%m-%d")
+        
+        # Chart
+        fig_flow = go.Figure()
+        fig_flow.add_trace(go.Bar(
+            x=daily_flow["Date"],
+            y=daily_flow["foreign_net"] / 1e9,
+            name="Foreign Net",
+            marker_color="#2563eb"
+        ))
+        fig_flow.add_trace(go.Bar(
+            x=daily_flow["Date"],
+            y=daily_flow["domestic_net"] / 1e9,
+            name="Domestic Net",
+            marker_color="#0f9f6e"
+        ))
+        fig_flow.update_layout(
+            barmode="group",
+            title="Daily Foreign vs Domestic Net Flow (Rp Billion)",
+            xaxis_title="Date",
+            yaxis_title="Net Flow (Rp B)",
+            height=350,
+            margin=dict(l=18, r=18, t=38, b=22),
+            paper_bgcolor="#ffffff",
+            plot_bgcolor="#ffffff"
+        )
+        fig_flow.add_hline(y=0, line_width=1, line_color="#94a3b8")
+        st.plotly_chart(fig_flow, use_container_width=True)
+        
+        # Tabel detail
+        st.dataframe(
+            daily_flow[["Date", "Foreign Net", "Domestic Net", "Total Value", "tickers"]]
+            .rename(columns={"tickers": "Active Tickers"}),
+            use_container_width=True,
+            hide_index=True
         )
 
+    st.divider()
+
+ # ── 3. PER-BROKER ACTIVITY DETAIL (Top Buyers & Sellers) ────────────
+    st.subheader("🏦 Per-Broker Activity Detail")
+    
+    if all_activity.empty:
+        st.warning("No broker_activity data in database.")
+    else:
+        # Pilih tanggal analisis
+        available_activity_dates = sorted(all_activity["date"].dt.date.unique().tolist(), reverse=True)
+        if available_activity_dates:
+            selected_activity_date = st.selectbox(
+                "Pilih Tanggal Broker Activity",
+                options=available_activity_dates,
+                index=0,
+                format_func=lambda x: x.strftime("%Y-%m-%d") if hasattr(x, 'strftime') else str(x)
+            )
+            selected_ts = pd.Timestamp(selected_activity_date)
+            
+            # Filter data untuk tanggal tersebut
+            day_activity = all_activity[all_activity["date"] == selected_ts].copy()
+            
+            if day_activity.empty:
+                st.info(f"Tidak ada data broker activity untuk {selected_activity_date}")
+            else:
+                # Agregasi per broker
+                broker_summary = (
+                    day_activity.groupby(["broker_code", "participant_type"])
+                    .agg(
+                        buy=("buy_value", "sum"),
+                        sell=("sell_value", "sum"),
+                        net=("net_value", "sum"),
+                        lot=("buy_lot", "sum"),
+                        freq=("frequency", "sum")
+                    )
+                    .reset_index()
+                )
+                
+                broker_summary["Type"] = broker_summary["participant_type"].map(participant_label)
+                broker_summary["Buy"] = broker_summary["buy"].apply(fmt_rp)
+                broker_summary["Sell"] = broker_summary["sell"].apply(fmt_rp)
+                broker_summary["Net"] = broker_summary["net"].apply(fmt_rp)
+                broker_summary["Lot"] = broker_summary["lot"].apply(lambda x: f"{x:,.0f}")
+                
+                # Split Buy vs Sell
+                top_buyers = broker_summary[broker_summary["net"] > 0].sort_values("net", ascending=False).head(10)
+                top_sellers = broker_summary[broker_summary["net"] < 0].sort_values("net", ascending=True).head(10)
+                
+                col_buy, col_sell = st.columns(2)
+                
+                with col_buy:
+                    st.markdown("#### 🟢 Top 10 Buyers")
+                    if top_buyers.empty:
+                        st.caption("Tidak ada net buyer.")
+                    else:
+                        st.dataframe(
+                            top_buyers[["broker_code", "Type", "Buy", "Net", "freq"]]
+                            .rename(columns={"broker_code": "Broker", "freq": "Freq"}),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=350
+                        )
+                
+                with col_sell:
+                    st.markdown("#### 🔴 Top 10 Sellers")
+                    if top_sellers.empty:
+                        st.caption("Tidak ada net seller.")
+                    else:
+                        st.dataframe(
+                            top_sellers[["broker_code", "Type", "Sell", "Net", "freq"]]
+                            .rename(columns={"broker_code": "Broker", "freq": "Freq"}),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=350
+                        )
+                
+                # Detail per ticker untuk broker terpilih
+                st.markdown("#### 📋 Detail Activity per Ticker")
+                
+                # Pilih broker untuk drill-down
+                all_brokers = sorted(day_activity["broker_code"].unique().tolist())
+                selected_broker_detail = st.selectbox("Pilih Broker untuk Detail", ["Semua"] + all_brokers)
+                
+                if selected_broker_detail == "Semua":
+                    ticker_detail = (
+                        day_activity.groupby(["ticker", "broker_code", "participant_type"])
+                        .agg(net=("net_value", "sum"), buy=("buy_value", "sum"), sell=("sell_value", "sum"))
+                        .reset_index()
+                        .sort_values("net", ascending=False)
+                    )
+                else:
+                    ticker_detail = (
+                        day_activity[day_activity["broker_code"] == selected_broker_detail]
+                        .groupby(["ticker", "broker_code", "participant_type"])
+                        .agg(net=("net_value", "sum"), buy=("buy_value", "sum"), sell=("sell_value", "sum"))
+                        .reset_index()
+                        .sort_values("net", ascending=False)
+                    )
+                
+                ticker_detail["Type"] = ticker_detail["participant_type"].map(participant_label)
+                ticker_detail["Net"] = ticker_detail["net"].apply(fmt_rp)
+                ticker_detail["Buy"] = ticker_detail["buy"].apply(fmt_rp)
+                ticker_detail["Sell"] = ticker_detail["sell"].apply(fmt_rp)
+                
+                st.dataframe(
+                    ticker_detail[["ticker", "broker_code", "Type", "Buy", "Sell", "Net"]]
+                    .rename(columns={"ticker": "Ticker", "broker_code": "Broker"})
+                    .head(50),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=400
+                )
+        else:
+            st.warning("No activity dates available.")
+
+    # Auto-refresh hint
+    st.divider()
+    st.caption("💡 Tip: Tekan **R** di keyboard atau klik tombol refresh browser untuk update data terbaru dari database.")
+    
 with raw_tab:
     st.subheader("Broker-Flow Rows")
     flow_view = broker_window[
@@ -1882,4 +2040,4 @@ with raw_tab:
     activity_view["Type"] = activity_view["Type"].map(participant_label)
     st.dataframe(style_table(activity_view, money_cols=["Buy", "Sell", "Net"]), use_container_width=True, hide_index=True)
 
-st.caption(f"Database: {db_info} | Tickers in DB: {len(all_broker['ticker'].unique()) if not all_broker.empty else 0} | Rows: prices={len(all_prices)} flow={len(all_broker)} activity={len(all_activity)}")
+st.caption(f"Database: {storage.config.DB_PATH}")
