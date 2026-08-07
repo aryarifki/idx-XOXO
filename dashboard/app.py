@@ -1244,6 +1244,7 @@ with st.sidebar:
                         st.error("Fetch gagal atau saham tidak ditemukan di broker API.")
 
     # ── Ticker Selector ──────────────────────────────────────────────────
+    latest_broker_date = None 
     if not watchlist:
         st.warning("Masukkan minimal 1 ticker.")
         selected_ticker = None
