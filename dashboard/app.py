@@ -1442,8 +1442,8 @@ with k6:
 render_alerts(alerts)
 render_verdict(verdict)
 
-overview_tab, flow_tab, causality_tab, validation_tab, screener_tab, raw_tab = st.tabs(
-    ["Overview", "Broker Flow", "Causality Insight", "Validation", "Screener", "Raw Tables"]
+overview_tab, flow_tab, causality_tab, validation_tab, screener_tab, live_db_tab, raw_tab = st.tabs(
+    ["Overview", "Broker Flow", "Causality Insight", "Validation", "Screener", "Live Database", "Raw Tables"]
 )
 
 with overview_tab:
@@ -1750,7 +1750,261 @@ with screener_tab:
             use_container_width=True,
             hide_index=True,
         )
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB: LIVE DATABASE — Real-time Monitor
+# ═══════════════════════════════════════════════════════════════════════════════
+with live_db_tab:
+    st.header("📡 Live Database Monitor")
+    st.caption(f"Real-time data from PostgreSQL • Last refresh: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
+    # ── 1. BANDAR SIGNAL (Broker Analysis) ──────────────────────────────
+    st.subheader("🎯 Bandar Signal (Latest per Ticker)")
+    
+    if all_broker.empty:
+        st.warning("No broker_flow data in database.")
+    else:
+        # Ambil data terbaru per ticker
+        latest_signals = (
+            all_broker.sort_values("date")
+            .groupby("ticker")
+            .last()
+            .reset_index()
+            [["ticker", "date", "bandar_signal", "bandar_signal_score", 
+              "foreign_net_broker", "local_net_broker", "gov_net_broker",
+              "foreign_signal", "total_value", "fetched_at"]]
+        )
+        
+        # Format untuk tampilan
+        latest_signals["Signal"] = latest_signals["bandar_signal"].map(fmt_signal)
+        latest_signals["Score"] = latest_signals["bandar_signal_score"].fillna(0)
+        latest_signals["Foreign Net"] = latest_signals["foreign_net_broker"].apply(fmt_rp)
+        latest_signals["Local Net"] = latest_signals["local_net_broker"].apply(fmt_rp)
+        latest_signals["Gov Net"] = latest_signals["gov_net_broker"].apply(fmt_rp)
+        latest_signals["Total Value"] = latest_signals["total_value"].apply(fmt_rp)
+        latest_signals["Date"] = pd.to_datetime(latest_signals["date"]).dt.strftime("%Y-%m-%d")
+        
+        # Filter & Search
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            signal_filter = st.multiselect(
+                "Filter Signal", 
+                options=latest_signals["Signal"].unique(),
+                default=[]
+            )
+        with c2:
+            search_ticker = st.text_input("🔍 Cari Ticker", placeholder="Contoh: BBCA, BBRI")
+        
+        filtered = latest_signals.copy()
+        if signal_filter:
+            filtered = filtered[filtered["Signal"].isin(signal_filter)]
+        if search_ticker:
+            filtered = filtered[filtered["ticker"].str.contains(search_ticker.upper(), na=False)]
+        
+        # Tampilkan tabel
+        display_cols = ["ticker", "Date", "Signal", "Score", "Foreign Net", 
+                       "Local Net", "Gov Net", "Total Value"]
+        st.dataframe(
+            filtered[display_cols].rename(columns={"ticker": "Ticker"}),
+            use_container_width=True,
+            hide_index=True,
+            height=400
+        )
+        
+        # Metrik ringkasan
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("Total Tickers", len(latest_signals))
+        with m2:
+            acc_count = len(latest_signals[latest_signals["Signal"].isin(["Accumulation", "Strong Accumulation", "Net Buy"])])
+            st.metric("Accumulation", acc_count, delta=f"{acc_count/len(latest_signals)*100:.1f}%")
+        with m3:
+            dist_count = len(latest_signals[latest_signals["Signal"].isin(["Distribution", "Strong Distribution", "Net Sell"])])
+            st.metric("Distribution", dist_count, delta=f"{dist_count/len(latest_signals)*100:.1f}%")
+        with m4:
+            neu_count = len(latest_signals[latest_signals["Signal"].isin(["Neutral", "Netral"])])
+            st.metric("Neutral", neu_count, delta=f"{neu_count/len(latest_signals)*100:.1f}%")
+
+    st.divider()
+
+    # ── 2. FOREIGN / DOMESTIC FLOW ──────────────────────────────────────
+    st.subheader("🌍 Foreign / Domestic Flow Summary")
+    
+    if all_broker.empty:
+        st.warning("No flow data available.")
+    else:
+        # Agregasi per hari
+        daily_flow = (
+            all_broker.groupby("date")
+            .agg(
+                foreign_net=("foreign_net_flow", "sum"),
+                domestic_net=("domestic_net_flow", "sum"),
+                total_value=("total_value", "sum"),
+                tickers=("ticker", "nunique")
+            )
+            .reset_index()
+            .sort_values("date", ascending=False)
+            .head(30)
+        )
+        
+        daily_flow["Foreign Net"] = daily_flow["foreign_net"].apply(fmt_rp)
+        daily_flow["Domestic Net"] = daily_flow["domestic_net"].apply(fmt_rp)
+        daily_flow["Total Value"] = daily_flow["total_value"].apply(fmt_rp)
+        daily_flow["Date"] = pd.to_datetime(daily_flow["date"]).dt.strftime("%Y-%m-%d")
+        
+        # Chart
+        fig_flow = go.Figure()
+        fig_flow.add_trace(go.Bar(
+            x=daily_flow["Date"],
+            y=daily_flow["foreign_net"] / 1e9,
+            name="Foreign Net",
+            marker_color="#2563eb"
+        ))
+        fig_flow.add_trace(go.Bar(
+            x=daily_flow["Date"],
+            y=daily_flow["domestic_net"] / 1e9,
+            name="Domestic Net",
+            marker_color="#0f9f6e"
+        ))
+        fig_flow.update_layout(
+            barmode="group",
+            title="Daily Foreign vs Domestic Net Flow (Rp Billion)",
+            xaxis_title="Date",
+            yaxis_title="Net Flow (Rp B)",
+            height=350,
+            margin=dict(l=18, r=18, t=38, b=22),
+            paper_bgcolor="#ffffff",
+            plot_bgcolor="#ffffff"
+        )
+        fig_flow.add_hline(y=0, line_width=1, line_color="#94a3b8")
+        st.plotly_chart(fig_flow, use_container_width=True)
+        
+        # Tabel detail
+        st.dataframe(
+            daily_flow[["Date", "Foreign Net", "Domestic Net", "Total Value", "tickers"]]
+            .rename(columns={"tickers": "Active Tickers"}),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    st.divider()
+
+ # ── 3. PER-BROKER ACTIVITY DETAIL (Top Buyers & Sellers) ────────────
+    st.subheader("🏦 Per-Broker Activity Detail")
+    
+    if all_activity.empty:
+        st.warning("No broker_activity data in database.")
+    else:
+        # Pilih tanggal analisis
+        available_activity_dates = sorted(all_activity["date"].dt.date.unique().tolist(), reverse=True)
+        if available_activity_dates:
+            selected_activity_date = st.selectbox(
+                "Pilih Tanggal Broker Activity",
+                options=available_activity_dates,
+                index=0,
+                format_func=lambda x: x.strftime("%Y-%m-%d") if hasattr(x, 'strftime') else str(x)
+            )
+            selected_ts = pd.Timestamp(selected_activity_date)
+            
+            # Filter data untuk tanggal tersebut
+            day_activity = all_activity[all_activity["date"] == selected_ts].copy()
+            
+            if day_activity.empty:
+                st.info(f"Tidak ada data broker activity untuk {selected_activity_date}")
+            else:
+                # Agregasi per broker
+                broker_summary = (
+                    day_activity.groupby(["broker_code", "participant_type"])
+                    .agg(
+                        buy=("buy_value", "sum"),
+                        sell=("sell_value", "sum"),
+                        net=("net_value", "sum"),
+                        lot=("buy_lot", "sum"),
+                        freq=("frequency", "sum")
+                    )
+                    .reset_index()
+                )
+                
+                broker_summary["Type"] = broker_summary["participant_type"].map(participant_label)
+                broker_summary["Buy"] = broker_summary["buy"].apply(fmt_rp)
+                broker_summary["Sell"] = broker_summary["sell"].apply(fmt_rp)
+                broker_summary["Net"] = broker_summary["net"].apply(fmt_rp)
+                broker_summary["Lot"] = broker_summary["lot"].apply(lambda x: f"{x:,.0f}")
+                
+                # Split Buy vs Sell
+                top_buyers = broker_summary[broker_summary["net"] > 0].sort_values("net", ascending=False).head(10)
+                top_sellers = broker_summary[broker_summary["net"] < 0].sort_values("net", ascending=True).head(10)
+                
+                col_buy, col_sell = st.columns(2)
+                
+                with col_buy:
+                    st.markdown("#### 🟢 Top 10 Buyers")
+                    if top_buyers.empty:
+                        st.caption("Tidak ada net buyer.")
+                    else:
+                        st.dataframe(
+                            top_buyers[["broker_code", "Type", "Buy", "Net", "freq"]]
+                            .rename(columns={"broker_code": "Broker", "freq": "Freq"}),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=350
+                        )
+                
+                with col_sell:
+                    st.markdown("#### 🔴 Top 10 Sellers")
+                    if top_sellers.empty:
+                        st.caption("Tidak ada net seller.")
+                    else:
+                        st.dataframe(
+                            top_sellers[["broker_code", "Type", "Sell", "Net", "freq"]]
+                            .rename(columns={"broker_code": "Broker", "freq": "Freq"}),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=350
+                        )
+                
+                # Detail per ticker untuk broker terpilih
+                st.markdown("#### 📋 Detail Activity per Ticker")
+                
+                # Pilih broker untuk drill-down
+                all_brokers = sorted(day_activity["broker_code"].unique().tolist())
+                selected_broker_detail = st.selectbox("Pilih Broker untuk Detail", ["Semua"] + all_brokers)
+                
+                if selected_broker_detail == "Semua":
+                    ticker_detail = (
+                        day_activity.groupby(["ticker", "broker_code", "participant_type"])
+                        .agg(net=("net_value", "sum"), buy=("buy_value", "sum"), sell=("sell_value", "sum"))
+                        .reset_index()
+                        .sort_values("net", ascending=False)
+                    )
+                else:
+                    ticker_detail = (
+                        day_activity[day_activity["broker_code"] == selected_broker_detail]
+                        .groupby(["ticker", "broker_code", "participant_type"])
+                        .agg(net=("net_value", "sum"), buy=("buy_value", "sum"), sell=("sell_value", "sum"))
+                        .reset_index()
+                        .sort_values("net", ascending=False)
+                    )
+                
+                ticker_detail["Type"] = ticker_detail["participant_type"].map(participant_label)
+                ticker_detail["Net"] = ticker_detail["net"].apply(fmt_rp)
+                ticker_detail["Buy"] = ticker_detail["buy"].apply(fmt_rp)
+                ticker_detail["Sell"] = ticker_detail["sell"].apply(fmt_rp)
+                
+                st.dataframe(
+                    ticker_detail[["ticker", "broker_code", "Type", "Buy", "Sell", "Net"]]
+                    .rename(columns={"ticker": "Ticker", "broker_code": "Broker"})
+                    .head(50),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=400
+                )
+        else:
+            st.warning("No activity dates available.")
+
+    # Auto-refresh hint
+    st.divider()
+    st.caption("💡 Tip: Tekan **R** di keyboard atau klik tombol refresh browser untuk update data terbaru dari database.")
+    
 with raw_tab:
     st.subheader("Broker-Flow Rows")
     flow_view = broker_window[
