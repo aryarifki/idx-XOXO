@@ -23,27 +23,40 @@ DB_PATH = DATA_DIR / "db" / "bandarmology.sqlite"
 for _d in (RAW_DIR, PROCESSED_DIR, DB_PATH.parent):
     _d.mkdir(parents=True, exist_ok=True)
 
+# ── secrets helpers ───────────────────────────────────────────────────────
+def _get_streamlit_secret(key: str, default: str | None = None) -> str | None:
+    """Read a secret from Streamlit Cloud Secrets if available."""
+    try:
+        import streamlit as st
+        val = st.secrets.get(key)
+        if val is not None:
+            return str(val).strip()
+    except Exception:
+        pass
+    return default
+
+def _get_env(key: str, default: str | None = None) -> str | None:
+    """Read from os.environ with optional fallback to Streamlit secrets."""
+    # Priority: Streamlit secrets > os.environ > default
+    val = _get_streamlit_secret(key)
+    if val:
+        return val
+    return os.environ.get(key, default)
+
 # ── database ──────────────────────────────────────────────────────────────
-DB_TYPE = os.environ.get("DB_TYPE", "sqlite").lower().strip()
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://idxuser:password@localhost:5432/bandarmology"
-)
+DB_TYPE = (_get_env("DB_TYPE") or "sqlite").lower().strip()
+DATABASE_URL = _get_env("DATABASE_URL") or "postgresql://idxuser:password@localhost:5432/bandarmology"
 
 # ── secrets ───────────────────────────────────────────────────────────────
 def get_broker_api_token() -> str | None:
     """Read token from .env, os.environ, or Streamlit Secrets."""
     load_dotenv(_ROOT / ".env")
 
-    try:
-        import streamlit as st
-        secret_token = str(st.secrets.get("BROKER_API_TOKEN", "")).strip()
-        if secret_token:
-            if secret_token.lower().startswith("bearer "):
-                secret_token = secret_token[7:].strip()
-            return secret_token
-    except Exception:
-        pass
+    token = _get_streamlit_secret("BROKER_API_TOKEN")
+    if token:
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        return token
 
     token = (
         os.environ.get("BROKER_API_TOKEN", "").strip()
