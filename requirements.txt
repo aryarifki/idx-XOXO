@@ -15,3 +15,4 @@ ipykernel>=6.25
 requests>=2.31.0
 python-telegram-bot>=20.0
 schedule>=1.2.0
+psycopg2-binary>=2.9

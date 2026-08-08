@@ -1243,6 +1243,13 @@ with st.sidebar:
                     else:
                         st.error("Fetch gagal atau saham tidak ditemukan di broker API.")
 
+        # Auto-fetch if missing
+        missing_tickers = [t for t in manual_tickers if t not in available_tickers]
+        if missing_tickers and api_ok:
+            with st.spinner(f"Auto-fetching data for {len(missing_tickers)} tickers..."):
+                pipeline.run(missing_tickers)
+                st.rerun()
+
     # ── Ticker Selector ──────────────────────────────────────────────────
     latest_broker_date = None 
     if not watchlist:
@@ -1330,6 +1337,11 @@ with st.sidebar:
 # Early-exit ke halaman Setup jika data belum siap
 # ═══════════════════════════════════════════════════════════════════════════════
 if not data_ready or not selected_ticker or not analysis_ts:
+    if not data_ready and broker_api.is_available():
+        with st.spinner("Auto-fetching default watchlist on initial launch..."):
+            pipeline.run(config.WATCHLIST)
+            st.rerun()
+
     st.markdown("## 🚀 Getting Started")
     st.markdown("""
     The database is currently empty. To populate it:
@@ -2040,4 +2052,6 @@ with raw_tab:
     activity_view["Type"] = activity_view["Type"].map(participant_label)
     st.dataframe(style_table(activity_view, money_cols=["Buy", "Sell", "Net"]), use_container_width=True, hide_index=True)
 
-st.caption(f"Database: {storage.config.DB_PATH}")
+db_info = storage.get_db_info()
+db_display = db_info.get("masked_url", db_info.get("path", ""))
+st.caption(f"Database: PostgreSQL ({db_display})" if db_info.get("type") == "postgresql" else f"Database: {db_info.get('type', '').capitalize()} ({db_display})")
